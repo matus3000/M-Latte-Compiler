@@ -1,0 +1,35 @@
+GHC        = ghc
+HAPPY      = happy
+HAPPY_OPTS = --array --info --ghc --coerce
+ALEX       = alex
+ALEX_OPTS  = --ghc
+
+vpath %.hs src
+vpath %.y src
+vpath %.x src
+vpath %.o build
+
+objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs
+compilers = Main.hs
+
+.PHONY: clean
+
+all: build build/Main
+
+build:
+	mkdir build
+
+src/Latte/Par.hs : src/Latte/Par.y
+	${HAPPY} ${HAPPY_OPTS} $< -o $@
+
+src/Latte/Lex.hs : src/Latte/Lex.x
+	${ALEX} ${ALEX_OPTS} $< -o $@
+
+build/Main: $(objects) Main.hs
+	${GHC} $? -O -isrc -odir build -o $@
+
+clean:
+	-rm -rf build
+	-rm -f ./insc_jvm ./insc_llvm
+	-rm $(addprefix src/Latte/, Par.hs Lex.hs Par.info)
+	-rm -f src/*.hi src/Latte/*.hi

@@ -1,4 +1,5 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Translator(programToInternal, CompilerExcept) where
 
@@ -144,60 +145,34 @@ assertDivision (Mod pos) (ILitInt 0) = throwError PlaceHolder
 assertDivision _ _= return ()
 
 f :: Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
-
-exprToInternal :: Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
-exprToInternal (ELitInt _ x) = return (StaticInt x, ILitInt x)
-exprToInternal (ELitTrue _) = return (StaticBool True, ILitBool True)
-exprToInternal (ELitFalse _) = return (StaticBool False, ILitBool False)
-exprToInternal (EString _ str) = return (StaticString str, IString str)
-exprToInternal expr@(Neg _ subexp) = do
-  (etype, iexp) <- exprToInternal subexp
-  if  not (etype `same` LInt)
-    then throwError PlaceHolder
-    else case etype of
-           (StaticInt x) -> return (StaticInt (-x), ILitInt (-x))
-           DynamicInt -> return (DynamicInt, INeg iexp)
-           _ -> throwError PlaceHolder
-exprToInternal (Not pos expr) = do
+f (ELitInt _ x) = return (StaticInt x, ILitInt x)
+f (ELitTrue _) = return (StaticBool True, ILitBool True)
+f (ELitFalse _) = return (StaticBool False, ILitBool False)
+f (EString _ str) = return (StaticString str, IString str)
+f (Not pos expr) = do
   (etype, iexp) <- exprToInternal expr
   unless (etype `same` LBool) $ throwError PlaceHolder
   return (etype, INot iexp)
-exprToInternal (EMul pos e1 op e2) = do
-  (type1, ie1) <- exprToInternal e1
-  (type2, ie2) <- exprToInternal e2
-  unless (type1 `same` LInt) $ throwError PlaceHolder
-  unless (type2 `same` LInt) $ throwError PlaceHolder
-  assertDivision op ie2
-  if iTypeStatic type1 && iTypeStatic type2
-    then
-    let (StaticInt x) = type1
-        (StaticInt y) = type2
-        res = evalStaticMul op x y
-        in
-        return (StaticInt res, ILitInt res)
-    else
-    return (DynamicInt, IMul (mulToIMul op) ie1 ie2)
-
-exprToInternal (EAdd pos e1 op e2) =
-  let
-    assertTypeCorrectness :: IType -> IType -> AddOp -> CompilerExcept ()
-    assertTypeCorrectness t1 t2 (Minus pos) =
-      unless (t1 `same` t2 && t1 `same` LInt) $ throwError PlaceHolder
-    assertTypeCorrectness t1 t2 (Plus pos) =
-      unless (t1 `same` t2 && (t1 `same` LInt || t1 `same` t2)) $ throwError PlaceHolder
-    helper :: (IType, IExpr) -> (IType, IExpr) -> AddOp -> CompilerExcept (IType, IExpr)
-    helper left right op = do
-      assertTypeCorrectness (fst left) (fst right) op
-      return (DynamicInt, IAdd (addtoIAdd op) (snd left) (snd right))
-  in
+f (EOr pos e1 e2) = let
+  x :: (IType, IExpr) -> Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
+  x (StaticBool False, _) exp =
     do
-      result1 <- exprToInternal e1
-      result2 <- exprToInternal e2
-      lift $ helper result1 result2 op
-
-exprToInternal (ERel pos e1 op e2) = undefined
-
-exprToInternal (EAnd pos e1 e2) =
+      (itype, iExp) <- exprToInternal exp
+      unless (itype `same` LBool) $ throwError PlaceHolder
+      return (itype, iExp)
+  x left@(DynamicBool, iLeft) exp =
+    do
+      (itype, iRight) <- exprToInternal exp
+      case itype of
+        (StaticBool True) -> return (DynamicBool, IOr iLeft iRight) -- Tu jest miejsce na optymalizację
+        (StaticBool False) -> return left
+        DynamicBool -> return (DynamicBool, IOr iLeft iRight)
+        _ -> throwError PlaceHolder
+  x left@(StaticBool True, _) _ = return left
+  x _ _ = throwError $ PlaceHolder
+  in
+    exprToInternal e1 >>= flip x e2
+f (EAnd pos e1 e2) =
   let
       x :: (IType, IExpr) -> Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
       x (StaticBool True, _) exp =
@@ -217,26 +192,53 @@ exprToInternal (EAnd pos e1 e2) =
       x _ _ = throwError PlaceHolder
   in
     exprToInternal e1 >>= flip x e2
-
-exprToInternal (EOr pos e1 e2) = let
-  x :: (IType, IExpr) -> Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
-  x (StaticBool False, _) exp =
-    do
-      (itype, iExp) <- exprToInternal exp
-      unless (itype `same` LBool) $ throwError PlaceHolder
-      return (itype, iExp)
-  x left@(DynamicBool, iLeft) exp =
-    do
-      (itype, iRight) <- exprToInternal exp
-      case itype of
-        (StaticBool True) -> return (DynamicBool, IOr iLeft iRight) -- Tu jest miejsce na optymalizację
-        (StaticBool False) -> return left
-        DynamicBool -> return (DynamicBool, IOr iLeft iRight)
-        _ -> throwError PlaceHolder
-  x left@(StaticBool True, _) _ = return left
-  x _ _ = throwError $ PlaceHolder
+f (EMul pos e1 op e2) = do
+  (type1, ie1) <- f e1
+  (type2, ie2) <- f e2
+  unless (type1 `same` LInt) $ throwError PlaceHolder
+  unless (type2 `same` LInt) $ throwError PlaceHolder
+  assertDivision op ie2
+  if iTypeStatic type1 && iTypeStatic type2
+    then
+    let (StaticInt x) = type1
+        (StaticInt y) = type2
+        res = evalStaticMul op x y
+        in
+        return (StaticInt res, ILitInt res)
+    else
+    return (DynamicInt, IMul (mulToIMul op) ie1 ie2)
+f (EAdd pos e1 op e2) =
+  let
+    assertTypeCorrectness :: IType -> IType -> AddOp -> CompilerExcept ()
+    assertTypeCorrectness t1 t2 (Minus pos) =
+      unless (t1 `same` t2 && t1 `same` LInt) $ throwError PlaceHolder
+    assertTypeCorrectness t1 t2 (Plus pos) =
+      unless (t1 `same` t2 && (t1 `same` LInt || t1 `same` t2)) $ throwError PlaceHolder
+    helper :: (IType, IExpr) -> (IType, IExpr) -> AddOp -> CompilerExcept (IType, IExpr)
+    helper (StaticString x, _) (StaticString y, _) (Plus pos) = do
+      return $ (\z -> (StaticString z, IString z)) (x ++ y)
+    helper (StaticInt x, _) (StaticInt y, _) op =
+      undefined
+    helper left right op = do
+      assertTypeCorrectness (fst left) (fst right) op
+      return (DynamicInt, IAdd (addtoIAdd op) (snd left) (snd right))
   in
-    exprToInternal e1 >>= flip x e2
+    do
+      result1 <- f e1
+      result2 <- f e2
+      lift $ helper result1 result2 op
+
+f (ERel pos e1 op e2) = undefined
+
+
+simplify :: (IType, IExpr) -> (IType, IExpr)
+simplify = undefined
+
+exprToInternal :: Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
+exprToInternal expr@(Neg _ subexp) = simplify <$>f expr
+exprToInternal expr@(EMul pos e1 op e2) =  simplify <$> f expr
+exprToInternal expr@(EAdd pos e1 op e2) = simplify <$> f expr
+exprToInternal expr = f expr
 
 
 emptyBNFC'Pos :: BNFC'Position
@@ -369,4 +371,43 @@ instance TypeClass IType where
 class IItemValue a where
   defaultValue :: a -> IExpr
 
+class Convertable a b where
+  convert :: a -> b
 
+class ApplicativeBiOperator a b c where
+  appOp :: a -> b -> b -> c
+
+instance Integral a => ApplicativeBiOperator AddOp a a where
+  appOp (Plus _) = (+)
+  appOp (Minus _) = (-)
+
+instance ApplicativeBiOperator MulOp Integer Integer where
+  appOp (Times _) = (*)
+  appOp (Div _) = div
+  appOp (Mod _) = mod
+
+instance Ord a => ApplicativeBiOperator RelOp a Bool where
+  appOp (LTH _)  = (<)
+  appOp (LE _)   = (<=)
+  appOp (EQU _)  = (==)
+  appOp (NE _)   = (/=)
+  appOp (GTH _)  = (>=)
+  appOp (GE _)   = (>)
+
+instance ApplicativeBiOperator IAddOp Integer Integer where
+  appOp IPlus = (+)
+  appOp IMinus = (-)
+
+instance ApplicativeBiOperator IMulOp Integer Integer where
+  appOp ITimes = (*)
+  appOp IDiv = div
+  appOp IMod = mod
+
+
+instance Ord a => ApplicativeBiOperator IRelOp a Bool where
+  appOp ILTH  = (<)
+  appOp ILE   = (<=)
+  appOp IEQU  = (==)
+  appOp INE   = (/=)
+  appOp IGTH  = (>=)
+  appOp IGE   = (>)

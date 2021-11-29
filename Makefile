@@ -9,7 +9,7 @@ vpath %.y src
 vpath %.x src
 vpath %.o build
 
-objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs
+objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs IDefinition.hs Translator.hs CompilationError
 compilers = Main.hs
 
 .PHONY: clean
@@ -25,8 +25,8 @@ src/Latte/Par.hs : src/Latte/Par.y
 src/Latte/Lex.hs : src/Latte/Lex.x
 	${ALEX} ${ALEX_OPTS} $< -o $@
 
-build/Main: $(objects) Main.hs
-	${GHC} $? -O -isrc -odir build -o $@
+build/Main: Main.hs $(objects) 
+	${GHC} $< -O -isrc -odir build -o $@
 
 clean:
 	-rm -rf build

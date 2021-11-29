@@ -1,9 +1,8 @@
 
 {-# LANGUAGE FlexibleInstances #-}
 module IDefinition (LType(..), VarType(..), convertType, getArgLType,
-                   SemanticError (..), SemanticErrorType (..), topDefArgs, topDefBlock,
-                   VariableEnvironment (..), Indexed(..),
-                   LItem(..), LBlock(..), LStmt(..), IFun(..)
+                   topDefArgs, topDefBlock,
+                   Indexed(..), getPosition, TypeClass(..)
                    ) where
 
 import Prelude
@@ -19,24 +18,15 @@ import Latte.Abs
       Block,
       Item,
       Item'(Init, NoInit),
-      Type )
+      Type, HasPosition (hasPosition) )
+import Data.Maybe (fromMaybe)
 
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType]
+  deriving Eq
 
 data VarType = StaticInt Int | DynamicInt | StaticBool Bool | DynamicBool |
               StaticString String | DynamicString
 
-data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LType, got :: LType} |
-                         RedefinitionOfVariable {position :: (Int, Int), oldDefinition :: (Int, Int),
-                                                 name :: String} |
-                         RedefinitionOfFunction {position :: (Int, Int), oldDefinition :: (Int, Int),
-                                                 name :: String} |
-                         NoReturnValueInBlock {position :: (Int, Int), blockPosition :: (Int, Int),
-                                               returnType :: LType} |
-                         NoMain 
-
-data SemanticError = SemanticError {functionPosition :: (Int, Int),
-                                    error :: SemanticErrorType} | PlaceHolder
 
 data VariableEnvironment = VEnv (Set String) (Map String VarType)
 
@@ -47,39 +37,13 @@ convertType (Bool _) = LBool
 convertType (Void _) = LVoid
 convertType (Fun _ x y) = LFun (convertType x) $ map convertType y
 
-
 getArgLType :: Arg -> LType
 getArgLType (Arg _ aType _) = convertType aType
 
 topDefArgs :: TopDef -> [Arg]
 topDefArgs (FnDef _ _ _ args _) = args
-
 topDefBlock :: TopDef -> Block
 topDefBlock (FnDef _ _ _ _ block) = block
-
-
-data LItem = XXXX
-
-data LExpr = XXXXX
-
-data LStmt = LBStmt LBlock |
-  LDecl [LItem] |
-  LAss String LExpr |
-  LIncr String |
-  LDecr String |
-  LRet LExpr |
-  LVRet |
-  LCond LExpr LStmt |
-  LCondElse LExpr LStmt LStmt |
-  LWhile LExpr LStmt |
-  LSExp LExpr |
-  LStmtEmpty
-  
-newtype LBlock = LBlock [LStmt]
-
-newtype IFun = IFun LBlock
-
-
 
 class Indexed a where
   getId :: a -> Ident
@@ -96,3 +60,14 @@ instance Indexed TopDef where
 instance Indexed Item where
   getId (NoInit _ id) = id
   getId (Init _ id _) = id
+
+getPosition :: (HasPosition a) => a -> (Int, Int)
+getPosition a = (-1, -1) `fromMaybe` hasPosition a
+
+class TypeClass a where
+  cast :: a -> LType
+  same :: (TypeClass b) => a -> b -> Bool
+  same a b = cast a == cast b
+
+instance TypeClass LType where
+  cast x = x

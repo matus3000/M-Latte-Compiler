@@ -20,6 +20,8 @@ import Control.Monad.Reader
 import Control.Monad(void)
 import qualified Data.Bifunctor
 import Data.Bifunctor (Bifunctor(first))
+import GHCi.ResolvedBCO (ResolvedBCOPtr)
+import qualified Control.Arrow as BiFunctor
 
 data VariableEnvironment = VEnv (Set String) (Map String IType)
 
@@ -62,6 +64,7 @@ data IExpr = IVar String |
   IAdd IAddOp IExpr IExpr |
   IMul IMulOp IExpr IExpr |
   IRel IRelOp IExpr IExpr
+  deriving Eq
 
 type FunctionData = (LType, [LType])
 type FunctionEnvironment = Map String FunctionData
@@ -120,24 +123,6 @@ lTypeToIType LInt = DynamicInt
 lTypeToIType LBool = DynamicBool
 lTypeToIType LString = DynamicString
 lTypeToIType _ = undefined
-
-evalStaticMul :: MulOp -> Integer -> Integer -> Integer
-evalStaticMul (Times _) a b = a * b
-evalStaticMul (Div _) a b = a `div` b
-evalStaticMul (Mod _) a b = a `mod` b
-
-mulToIMul :: MulOp -> IMulOp
-mulToIMul (Times _) = ITimes
-mulToIMul (Div _)  = IDiv
-mulToIMul (Mod _) = IMod
-
-addtoIAdd :: AddOp -> IAddOp
-addtoIAdd (Plus _) = IPlus
-addtoIAdd (Minus _) = IMinus
-
-evalStaticAdd :: AddOp -> Integer -> Integer -> Integer
-evalStaticAdd (Plus _) a b = a + b
-evalStaticAdd (Minus _) a b = a - b
 
 assertDivision :: MulOp -> IExpr -> Compiler FunTranslationEnvironment ()
 assertDivision (Div pos) (ILitInt 0) = throwError PlaceHolder
@@ -202,7 +187,7 @@ f (EMul pos e1 op e2) = do
     then
     let (StaticInt x) = type1
         (StaticInt y) = type2
-        res = evalStaticMul op x y
+        res = appOp op x y
         in
         return (StaticInt res, ILitInt res)
     else
@@ -218,7 +203,7 @@ f (EAdd pos e1 op e2) =
     helper (StaticString x, _) (StaticString y, _) (Plus pos) = do
       return $ (\z -> (StaticString z, IString z)) (x ++ y)
     helper (StaticInt x, _) (StaticInt y, _) op =
-      undefined
+      return $ (\z -> (StaticInt z, ILitInt z)) $ appOp op x y
     helper left right op = do
       assertTypeCorrectness (fst left) (fst right) op
       return (DynamicInt, IAdd (addtoIAdd op) (snd left) (snd right))
@@ -228,11 +213,48 @@ f (EAdd pos e1 op e2) =
       result2 <- f e2
       lift $ helper result1 result2 op
 
-f (ERel pos e1 op e2) = undefined
+f (ERel pos e1 op e2) = let
+  assertType :: RelOp -> IType -> IType -> CompilerExcept ()
+  assertType (EQU _) x y = do
+    when (x `same` LInt && not (x `same` y)) $ throwError PlaceHolder
+    when (x `same` LString && not (x `same` y)) $ throwError PlaceHolder
+    when (x `same` LBool && not (x `same` y)) $ throwError PlaceHolder
+  assertType (NE pos) x y = assertType (EQU pos) x y
+  assertType (LTH pos) x y = do
+    when (x `same` LInt && not (x `same` y)) $ throwError PlaceHolder
+  assertType op x y = assertType (LTH $ hasPosition op) x y
+  helper :: RelOp -> (IType, IExpr) -> (IType, IExpr) -> (IType, IExpr)
+  helper op (StaticInt x, _) (StaticInt y, _) =
+    (\boolean -> (StaticBool boolean, ILitBool boolean)) (appOp op x y)
+  helper op (StaticBool x, _) (StaticBool y, _) =
+    (\boolean -> (StaticBool boolean, ILitBool boolean)) (appOp op x y)
+  helper op (StaticString x, _) (StaticString y, _) =
+    (\boolean -> (StaticBool boolean, ILitBool boolean)) (appOp op x y)
+  helper op (_, left) (_, right)  = (DynamicBool, IRel (reltoIRel op) left right)
+  in
+    do
+      r1@(it1, ie1) <- exprToInternal e1
+      r2@(it2, ie2) <- exprToInternal e2
+      lift $ assertType op it1 it2
+      return $ helper op r1 r2
 
+-- data SimplifyInfo =
+--   SimpVar String |
+--   SimpInt Integer |
+--   SimpFun Int String [IExpr]
+--   deriving Eq
 
 simplify :: (IType, IExpr) -> (IType, IExpr)
-simplify = undefined
+simplify pair = pair
+-- simplify pair@(StaticInt _, rest) = return pair
+-- simplify pair@(StaticString _, rest) = return pair
+-- simplify pair@(StaticBool _, rest) = return pair
+-- simplify pair@(_, rest) =
+--   let fun :: IExpr -> Int -> CompilerExcept (Int, DM.Map SimplifyInfo Int)
+--       fun = undefined
+--   in
+--     return pair
+
 
 exprToInternal :: Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
 exprToInternal expr@(Neg _ subexp) = simplify <$>f expr
@@ -307,7 +329,100 @@ stmtsToInternal ((Decl pos dtype items):rest) = do
   (items, state) <- lift $ runStateT (itemsToInternals ltype items) env
   (istmts, ret) <- const state `local` stmtsToInternal rest
   return (IDecl items:istmts, ret)
-
+stmtsToInternal ((Ass pos ident expr):rest) = do
+  env@(context, VEnv set map) <- ask
+  let (Ident id)= ident
+      x =  id `DM.lookup` map
+  case x of
+        Nothing -> throwError $ PlaceHolder
+        Just xType ->
+          do
+            (assType, assIExpr) <- exprToInternal expr
+            unless (xType `same` assType) $ throwError (PlaceHolder )
+            (irest, returnBool) <- Data.Bifunctor.second (\(VEnv set map) -> VEnv set (DM.insert id assType map))
+              `local` stmtsToInternal rest
+            return (IAss id assIExpr:irest, returnBool)
+stmtsToInternal ((Incr pos (Ident varId)):rest) = do
+  env@(context, VEnv set map) <- ask
+  let x =  varId `DM.lookup` map
+  case x of
+        Nothing -> throwError $ PlaceHolder
+        Just xType -> do
+          unless (xType `same` LInt) $ throwError (PlaceHolder)
+          let
+            modify :: Compiler FunTranslationEnvironment a -> Compiler FunTranslationEnvironment a
+            modify = case xType of
+                StaticInt val -> local (Data.Bifunctor.second
+                  (\(VEnv set map) -> VEnv set (DM.insert varId (StaticInt (val + 1)) map)))
+                _ -> id
+          (irest, returnBool) <- modify $ stmtsToInternal rest
+          return (IIncr varId:irest, returnBool)
+stmtsToInternal ((Decr pos (Ident varId)):rest) = do
+  env@(context, VEnv set map) <- ask
+  let x =  varId `DM.lookup` map
+  case x of
+        Nothing -> throwError $ PlaceHolder
+        Just xType -> do
+          unless (xType `same` LInt) $ throwError (PlaceHolder)
+          let
+            modify :: Compiler FunTranslationEnvironment a -> Compiler FunTranslationEnvironment a
+            modify = case xType of
+                StaticInt val -> local (Data.Bifunctor.second
+                  (\(VEnv set map) -> VEnv set (DM.insert varId (StaticInt (val - 1)) map)))
+                _ -> id
+          (irest, returnBool) <- modify $ stmtsToInternal rest
+          return (IDecr varId:irest, returnBool)
+stmtsToInternal ((Ret pos expr):rest) =
+  do
+    ((funType, _, _), _) <- ask
+    (itype, iexpr) <- exprToInternal expr
+    unless (itype `same` funType) $ throwError PlaceHolder
+    return ([IRet iexpr], True)
+stmtsToInternal ((VRet pos):rest) =   do
+  ((funType, _, _), _) <- ask
+  unless (funType `same` LVoid) $ throwError PlaceHolder
+  return ([IVRet], True)
+stmtsToInternal ((Cond pos expr stmt): rest) = do
+  (itype, iexpr) <- exprToInternal expr
+  unless (itype `same` LBool) (throwError PlaceHolder)
+  case itype of
+    (StaticBool False) -> stmtsToInternal rest
+    (StaticBool True) -> stmtsToInternal (stmt:rest)
+    _ -> do
+      (istmt, returnBoolean) <- stmtsToInternal [stmt]
+      if returnBoolean
+        then return (istmt, True)
+        else BiFunctor.first (head istmt:) <$> stmtsToInternal rest
+stmtsToInternal ((CondElse pos expr stmt1 stmt2):rest) =
+  do
+    (itype, iexpr) <- exprToInternal expr
+    unless (itype `same` LBool) (throwError PlaceHolder)
+    case itype of
+      (StaticBool False) -> stmtsToInternal (stmt2:rest)
+      (StaticBool True) -> stmtsToInternal (stmt1:rest)
+      _ -> do
+        (istmt1, returnBoolean1) <- stmtsToInternal [stmt1]
+        (istmt2, returnBoolean2) <- stmtsToInternal [stmt2]
+        if returnBoolean1 && returnBoolean2
+          then return ([ICondElse iexpr (head istmt1) (head istmt2)], True)
+          else BiFunctor.first ((ICondElse iexpr (head istmt1) (head istmt2)):) <$> stmtsToInternal rest
+stmtsToInternal ((While pos expr stmt):rest) = do
+  (itype, iexpr) <- exprToInternal expr
+  unless (itype `same` LBool) (throwError PlaceHolder)
+  case itype of
+    (StaticBool False) -> stmtsToInternal rest
+    (StaticBool True) ->
+      do
+        (istmts, returnBoolean) <- stmtsToInternal [stmt]
+        return ([IWhile iexpr (head istmts)], returnBoolean)
+    _ -> do
+      (istmts, returnBoolean) <- stmtsToInternal [stmt]
+      BiFunctor.first (IWhile iexpr (head istmts):) <$> stmtsToInternal rest
+stmtsToInternal ((SExp _ expr):rest) =
+  do
+    (_, iexpr) <- exprToInternal expr
+    BiFunctor.first (ISExp iexpr:) <$> stmtsToInternal rest
+stmtsToInternal ((Empty pos):rest) = stmtsToInternal rest
 
 blockToInternal :: Block -> Compiler FunTranslationEnvironment (IBlock, Bool)
 blockToInternal block@(Block x stmts) =
@@ -403,7 +518,6 @@ instance ApplicativeBiOperator IMulOp Integer Integer where
   appOp IDiv = div
   appOp IMod = mod
 
-
 instance Ord a => ApplicativeBiOperator IRelOp a Bool where
   appOp ILTH  = (<)
   appOp ILE   = (<=)
@@ -411,3 +525,24 @@ instance Ord a => ApplicativeBiOperator IRelOp a Bool where
   appOp INE   = (/=)
   appOp IGTH  = (>=)
   appOp IGE   = (>)
+
+
+mulToIMul :: MulOp -> IMulOp
+mulToIMul (Times _) = ITimes
+mulToIMul (Div _)  = IDiv
+mulToIMul (Mod _) = IMod
+
+addtoIAdd :: AddOp -> IAddOp
+addtoIAdd (Plus _) = IPlus
+addtoIAdd (Minus _) = IMinus
+
+reltoIRel :: RelOp -> IRelOp
+reltoIRel x = case x of
+  LTH ma -> ILTH
+  LE ma -> ILE
+  GTH ma -> IGTH
+  GE ma -> IGE
+  EQU ma -> IEQU
+  NE ma -> INE
+
+

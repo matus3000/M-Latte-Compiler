@@ -30,6 +30,5 @@ build/Main: Main.hs $(objects)
 
 clean:
 	-rm -rf build
-	-rm -f ./insc_jvm ./insc_llvm
-	-rm $(addprefix src/Latte/, Par.hs Lex.hs Par.info)
+	-rm -f $(addprefix src/Latte/, Par.hs Lex.hs Par.info)
 	-rm -f src/*.hi src/Latte/*.hi

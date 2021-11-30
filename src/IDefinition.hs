@@ -71,3 +71,9 @@ class TypeClass a where
 
 instance TypeClass LType where
   cast x = x
+
+instance Show LType where
+  showsPrec x LInt = showString "Int"
+  showsPrec x LBool = showString "Bool"
+  showsPrec x LVoid = showString "Void"
+  showsPrec x LString = showString "String"

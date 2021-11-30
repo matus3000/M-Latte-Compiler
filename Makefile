@@ -9,7 +9,7 @@ vpath %.y src
 vpath %.x src
 vpath %.o build
 
-objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs IDefinition.hs Translator.hs CompilationError
+objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs IDefinition.hs Translator.hs CompilationError.hs
 compilers = Main.hs
 
 .PHONY: clean

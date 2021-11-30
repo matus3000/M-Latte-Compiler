@@ -14,6 +14,7 @@ import Control.Monad.Reader (ReaderT, runReaderT, local, ask)
 import Control.Monad(void)
 
 import System.Environment (getArgs)
+import System.IO (stderr, hPutStrLn)
 import System.Exit
 
 import IDefinition as IDef
@@ -32,6 +33,7 @@ import Latte.Lex (Token)
 import Latte.Par (myLexer, pProgram)
 
 import Translator
+import CompilationError (errorToString)
 
 type Err = Either String
 type ParseFun a = [Token] -> Err a
@@ -44,14 +46,22 @@ compile program =
 argumentError = 1
 grammarError = 2
 
+putStrLnStderr :: String -> IO()
+putStrLnStderr = hPutStrLn stderr
+
 runCompiler :: ParseFun Program -> String -> IO ()
 runCompiler p s =
   case p ts of
     Left err -> do
+      putStrLnStderr "ERROR"
+      putStrLnStderr err
       exitWith (ExitFailure grammarError)
     Right program -> do
       case runExcept $ compile program of
-        Left err -> exitWith (ExitFailure argumentError)
+        Left err -> do
+          putStrLnStderr "ERROR"
+          putStrLnStderr $ errorToString err
+          exitWith (ExitFailure argumentError)
         Right _ -> exitSuccess
   where
     ts = myLexer s

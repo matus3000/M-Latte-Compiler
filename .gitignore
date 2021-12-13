@@ -1,0 +1,17 @@
+*.o
+*.hi
+build/*
+build
+**.hi
+**.o
+*.sh
+*~
+**/tmp
+tmp
+src/Latte/Doc.txt
+src/Latte/Lex.hs
+src/Latte/Par.hs
+src/Latte/Par.info
+src/Latte/Print.hs
+src/Latte/Test.hs
+src/test.hs

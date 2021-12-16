@@ -1,7 +1,16 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
 
-module Translator(programToInternal, CompilerExcept) where
+module Translator(programToInternal,
+                  CompilerExcept,
+                  IFun(..),
+                  IBlock(..),
+                  IStmt(..),
+                  IExpr(..),
+                  Convertable(..),
+                  IRelOp(..),
+                  IAddOp(..),
+                  IMulOp(..)) where
 
 
 import IDefinition(LType(..), Indexed(..), getArgLType, convertType, topDefBlock, topDefArgs, getPosition, TypeClass (..), VarType ())
@@ -97,6 +106,7 @@ data IExpr = IVar String |
   IRel IRelOp IExpr IExpr
   deriving Eq
 
+data IFun = IFun String LType [LType] IBlock
 type FunctionData = (LType, [LType])
 type FunctionEnvironment = DM.Map String FunctionData
 type FunContext = (LType, String, (Int, Int))
@@ -480,7 +490,7 @@ blockToInternal block@(Block x stmts) =
       return $ Data.BiFunctor.first IBlock result
 
 
-topDefToInternal :: TopDef -> FunctionEnvironment -> CompilerExcept ()
+topDefToInternal :: TopDef -> FunctionEnvironment -> CompilerExcept IFun
 topDefToInternal fDef fEnv = let
   funName = getIdStr fDef
   funArgs = [(getIdStr i, getArgLType i) | i <- topDefArgs fDef]
@@ -494,6 +504,7 @@ topDefToInternal fDef fEnv = let
     do
       x <- res
       unless (snd x || retType == LVoid) (throwError $ SemanticError (getPosition fDef) (NoReturnValue retType))
+      return $ IFun funName retType (snd `map` funArgs) (fst x)
 
 assertMain :: FunctionEnvironment -> CompilerExcept ()
 assertMain fEnv =
@@ -504,7 +515,7 @@ assertMain fEnv =
       Just (LInt, _) -> return ()
       _ -> throwError $ SemanticError (0,0) NoMain
 
-programToInternal :: Program -> CompilerExcept()
+programToInternal :: Program -> CompilerExcept [IFun]
 programToInternal program@(Program _ topDefs) =
   let
     x :: CompilerExcept ()
@@ -517,7 +528,7 @@ programToInternal program@(Program _ topDefs) =
     do
       fEnv <- getFunctionEnvironment program
       assertMain fEnv
-      mapM_ (`topDefToInternal` fEnv) topDefs
+      mapM (`topDefToInternal` fEnv) topDefs
 
 class Castable a b where
   cast_ :: a -> b

@@ -18,7 +18,8 @@ data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LTy
                                             gotPair :: (LType, LType)}
 
 data SemanticError = SemanticError {functionPosition :: (Int, Int),
-                                    error :: SemanticErrorType}
+                                    error :: SemanticErrorType} |
+                     CompilationError
 
 msg :: (Int, Int) -> String
 msg (line, col) = "Error in position (" ++ show line ++ ", " ++ show col ++ "): "

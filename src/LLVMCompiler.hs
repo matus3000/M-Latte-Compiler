@@ -6,36 +6,22 @@ module LLVMCompiler (FCBinaryOperator(..),
                      FCInstr(..),
                      compileToFC) where
 import Prelude
+
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as DM
 import Control.Monad.State.Strict
 import Control.Monad.Except (Except, MonadError)
 
-import CompilationError(SemanticError)
-import Translator(CompilerExcept, Convertable)
+import CompilationError(SemanticError, SemanticError(CompilationError))
+import Translator(CompilerExcept, Convertable(..))
+import LLCompilerDefs
 import qualified Translator as Tr
-
-data FCBinaryOperator = Add | Sub | Div | Mul | Mod | LShift | RShif | ByteAnd | ByteOr | ByteXor |
-                     BoolAnd | BoolOr | BoolXor | BoolNeg | Test | CMP
-  deriving (Eq, Ord)
-
-data FCRegister = VoidReg | Reg String | LitInt Int | LitBool Bool | LitString String
-  deriving (Eq, Ord)
-
-data FCRValue = FunCall String [FCRegister] | FCBinOp FCBinaryOperator FCRegister FCRegister | FCRegister
-  deriving (Eq, Ord)
-
-type FCInstr = (FCRegister, FCRValue)
-
-type FCBlock = (String, [FCInstr])
-
-type FCFun = (String, [FCBlock])
+import LLCompilerDefs (FCRValue(ConstValue, FCUnOp))
+import qualified Data.Functor
 
 data FCCompilationState =  FCCompilationState {nextRegisterNum :: Int}
 
 type FCC = StateT FCCompilationState CompilerExcept
-
-lookupVar :: String -> FCC FCRegister
-lookupVar = undefined
 
 -- type NormaliziedFCRValue = FCRValue
 
@@ -56,29 +42,79 @@ lookupVar = undefined
 --     Just fr -> (eMap, fr)
 --     Nothing -> (ExpressionMap (DM.insert normalizedRValue reg expMap) (DM.insert reg normalizedRValue rMap), reg)
 
+data FCBOType = Arithmetic | Boolean | Relation | Bitwise
+
+binOpGetType :: FCBinaryOperator  -> FCBOType
+binOpGetType x = case x of
+  Add -> Arithmetic
+  Sub -> Arithmetic
+  Div -> Arithmetic
+  Mul -> Arithmetic
+  Mod -> Arithmetic
+  LShift -> Arithmetic
+  RShif -> Arithmetic
+  ByteAnd -> Bitwise
+  ByteOr -> Bitwise
+  ByteXor -> Bitwise
+  BoolAnd -> Boolean
+  BoolOr -> Boolean
+  BoolXor -> Boolean
+  Test -> Boolean
 
 
 compileExpr :: (ExpToFCStateMonad a) => Tr.IExpr -> Bool -> a FCRegister
 compileExpr x save =
   let
-    compileExprAddMull :: (ExpToFCStateMonad a) => Tr.IExpr -> Bool -> a FCRegister
-    compileExprAddMull = undefined 
-    in
+    compileExprAddMull x save =
+      let
+        u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
+        u@(op, ie1, ie2) = case x of
+          Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
+          Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
+          _ -> undefined
+      in
+        do
+          r1 <- compileExpr ie2 True
+          r2 <- compileExpr ie1 True
+          prependFCRValue RNormal $ FCBinOp op r1 r2
+  in
     case x of
-      Tr.IApp fun ies -> undefined
-      Tr.IAdd iao ie ie' -> undefined
-      Tr.IMul imo ie ie' -> undefined
-    -- Tr.IAnd ie ie' -> undefined
-      _ -> undefined
---   Tr.IString s -> _
---   Tr.INeg ie -> _
---   Tr.INot ie -> _
---   Tr.IOr ie ie' -> _
---   Tr.IRel iro ie ie' -> _
---   Tr.IVar s -> _
---   Tr.ILitInt n -> _
---   Tr.ILitBool b -> _    
-  
+      Tr.ILitInt n -> return $ (LitInt . fromInteger) n
+      Tr.ILitBool b -> return $ LitBool b
+      Tr.IString s -> do
+        constEt <- lookupStringName s
+        prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
+      Tr.IVar s -> getVariable s Data.Functor.<&> fromMaybe undefined
+      addInstr@(Tr.IAdd iao ie ie') -> compileExprAddMull addInstr save
+      mulInstr@(Tr.IMul imo ie ie') -> compileExprAddMull mulInstr save
+      Tr.INeg ie -> do
+        reg <- compileExpr ie True
+        prependFCRValue RNormal $ FCUnOp Neg reg
+      Tr.INot ie -> do
+        reg <- compileExpr ie True
+        prependFCRValue RNormal $ FCUnOp BoolNeg reg
+      Tr.IAnd ie ie' -> do
+        r2 <- compileExpr ie' True
+        r1 <- compileExpr ie True
+        prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+      Tr.IOr ie ie' -> do
+        r2 <- compileExpr ie' True
+        r1 <- compileExpr ie True
+        prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+      Tr.IApp fun ies -> let
+        r ::(ExpToFCStateMonad a) =>  Bool -> Bool -> a FCRegister
+        r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
+          do
+            args <- mapM (`compileExpr` True) (reverse ies)
+            prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
+              FunCall fun args
+        in
+        isFunStatic fun >>= r True
+      Tr.IRel iro ie ie' -> do
+        r2 <- compileExpr ie' True 
+        r1 <- compileExpr ie True
+        prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
+        
 
 compileInstrs :: [Tr.IStmt] -> CompilerExcept [FCBlock]
 compileInstrs =
@@ -92,44 +128,15 @@ compileFun = undefined
 compileToFC :: [Tr.IFun] -> CompilerExcept ()
 compileToFC = undefined
 
-instance Show FCRegister where
-  showsPrec _ VoidReg = showString ""
-  showsPrec _ (Reg str) = showString str
-  showsPrec y (LitBool x) = showsPrec y x
-  showsPrec y (LitInt x) = showsPrec y x
-  showsPrec y (LitString x) = showString x
 
-instance Convertable Tr.IAddOp FCBinaryOperator where
+instance Convertable Tr.IRelOp FCBinaryOperator where
   convert x = case x of
-    Tr.IPlus -> Add
-    Tr.IMinus -> Sub
-
-instance Convertable Tr.IMulOp FCBinaryOperator where
-  convert x = case x of
-    Tr.ITimes -> Mul
-    Tr.IDiv -> Div
-    Tr.IMod -> Mod
-
--- instance Convertable Tr.IRelOp FCBinaryOperator where
---   convert x = case x of
---     Tr.ILTH -> CMP
---     Tr.ILE -> CMP
---     Tr.IGTH -> CMP
---     Tr.IGE -> CMP
---     Tr.IEQU -> CMP
---     Tr.INE -> CMP
-
-class (MonadError SemanticError a) => ExpToFCStateMonad a where
-  lookupNextNRegister  :: a FCRegister
-  nextNRegiter         :: a FCRegister
-  nextPRegisert        :: a FCRegister
-  setRegister          :: FCRegister -> FCRValue -> a ()
-  getRegister          :: FCRegister -> a FCRValue
-  fCRValToReg          :: FCRValue -> a (Maybe FCRegister)
-  prependFCInstr       :: FCInstr -> a ()
-  getVariable          :: String -> a (Maybe FCRegister) -- Maybe is somehow redundant but it's a good practice to dobule check
-  isFunStatic             :: String -> a Bool
-
+    Tr.ILTH -> Lth
+    Tr.ILE -> Le
+    Tr.IGTH -> Gth
+    Tr.IGE -> Ge
+    Tr.IEQU -> Equ
+    Tr.INE -> Neq
 
 -- class (ExpToFCStateMonad a) => FCTranslationStateMonad a where
 --   currentBlock

@@ -62,10 +62,10 @@ binOpGetType x = case x of
   Test -> Boolean
 
 
-compileExpr :: (ExpToFCStateMonad a) => Tr.IExpr -> Bool -> a FCRegister
-compileExpr x save =
+translateExpr :: (ExpToFCStateMonad a) => Tr.IExpr -> Bool -> a FCRegister
+translateExpr x save =
   let
-    compileExprAddMull x save =
+    translateExprAddMull x save =
       let
         u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
         u@(op, ie1, ie2) = case x of
@@ -74,8 +74,8 @@ compileExpr x save =
           _ -> undefined
       in
         do
-          r1 <- compileExpr ie2 True
-          r2 <- compileExpr ie1 True
+          r1 <- translateExpr ie2 True
+          r2 <- translateExpr ie1 True
           prependFCRValue RNormal $ FCBinOp op r1 r2
   in
     case x of
@@ -85,42 +85,70 @@ compileExpr x save =
         constEt <- lookupStringName s
         prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
       Tr.IVar s -> getVariable s Data.Functor.<&> fromMaybe undefined
-      addInstr@(Tr.IAdd iao ie ie') -> compileExprAddMull addInstr save
-      mulInstr@(Tr.IMul imo ie ie') -> compileExprAddMull mulInstr save
+      addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
+      mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
       Tr.INeg ie -> do
-        reg <- compileExpr ie True
+        reg <- translateExpr ie True
         prependFCRValue RNormal $ FCUnOp Neg reg
       Tr.INot ie -> do
-        reg <- compileExpr ie True
+        reg <- translateExpr ie True
         prependFCRValue RNormal $ FCUnOp BoolNeg reg
       Tr.IAnd ie ie' -> do
-        r2 <- compileExpr ie' True
-        r1 <- compileExpr ie True
+        r2 <- translateExpr ie' True
+        r1 <- translateExpr ie True
         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
       Tr.IOr ie ie' -> do
-        r2 <- compileExpr ie' True
-        r1 <- compileExpr ie True
+        r2 <- translateExpr ie' True
+        r1 <- translateExpr ie True
         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
       Tr.IApp fun ies -> let
         r ::(ExpToFCStateMonad a) =>  Bool -> Bool -> a FCRegister
         r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
           do
-            args <- mapM (`compileExpr` True) (reverse ies)
+            args <- mapM (`translateExpr` True) (reverse ies)
             prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
               FunCall fun args
         in
         isFunStatic fun >>= r True
       Tr.IRel iro ie ie' -> do
-        r2 <- compileExpr ie' True 
-        r1 <- compileExpr ie True
+        r2 <- translateExpr ie' True
+        r1 <- translateExpr ie True
         prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
-        
 
-compileInstrs :: [Tr.IStmt] -> CompilerExcept [FCBlock]
-compileInstrs =
-  let x = 0
-  in
-  undefined
+translateIItem :: (InstrToFCStateMonad a) => Tr.IItem -> a ()
+translateIItem (Tr.IItem s expr) = void $
+  do
+    mreg <- getVariable s
+    case mreg of
+      Just reg -> setVariable s reg
+      Nothing -> undefined
+
+translateInstr :: (InstrToFCStateMonad a) => Tr.IStmt -> a ()
+translateInstr stmt = case stmt of
+  Tr.IBStmt ib -> translateBlock ib
+  Tr.IDecl iis -> void $ do
+    iis <- mapM translateIItem (reverse iis)
+    return  ()
+  Tr.IAss s ie -> void $ do
+    mreg <- getVariable s
+    case mreg of
+      Just reg -> setVariable s reg
+      Nothing -> undefined
+  Tr.IIncr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
+  Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
+  Tr.IRet ie -> void $ do
+    r <- translateExpr ie True
+    prependFCRValue RVoid $ Return (Just r)
+  Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
+  Tr.ICond ie is -> undefined
+  Tr.ICondElse ie is is' -> undefined
+  Tr.IWhile ie is -> undefined
+  Tr.ISExp ie -> void $ translateExpr ie False
+  Tr.IStmtEmpty -> return ()
+
+translateBlock :: (InstrToFCStateMonad a) => Tr.IBlock -> a ()
+translateBlock = undefined
+
 compileBlock :: Tr.IBlock -> CompilerExcept [FCBlock]
 compileBlock = undefined
 compileFun :: Tr.IFun -> CompilerExcept ()

@@ -1,10 +1,12 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 module LLCompilerDefs (
   ExpToFCStateMonad(prependFCRValue,
                     getVariable,
                     lookupStringName,
                     isFunStatic),
+  InstrToFCStateMonad(setVariable),
   FCUnaryOperator(..),
   FCBinaryOperator(..),
   FCRegister(..),
@@ -16,7 +18,7 @@ module LLCompilerDefs (
 where
 
 import Control.Monad.Except (Except, MonadError)
-
+import Control.Monad.State.Strict (MonadState)
 import CompilationError(SemanticError, SemanticError(CompilationError))
 import Translator(CompilerExcept, Convertable(..))
 import qualified Translator as Tr
@@ -33,7 +35,7 @@ data FCRegister = VoidReg | Reg String | LitInt Int | LitBool Bool | Et String
 
 data FCRValue = FunCall String [FCRegister] | FCBinOp FCBinaryOperator FCRegister FCRegister |
                 FCUnOp FCUnaryOperator FCRegister | ConstValue FCRegister |
-                GetPointer FCRegister FCRegister
+                GetPointer FCRegister FCRegister | Return Maybe(FCRegister)
   deriving (Eq, Ord)
 
 type FCInstr = (FCRegister, FCRValue)
@@ -55,7 +57,15 @@ class (MonadError SemanticError a) => ExpToFCStateMonad a where
   prependFCRValue      :: RegType -> FCRValue -> a FCRegister
   getVariable          :: String -> a (Maybe FCRegister) -- Maybe is somehow redundant but it's a good practice to dobule check
   isFunStatic          :: String -> a Bool
-  
+
+class (ExpToFCStateMonad a) => InstrToFCStateMonad a where
+  setVariable :: String -> FCRegister -> a FCRegister
+
+class (ExpToFCStateMonad m, MonadState s m) => BlockToFCStateMonad s m | m -> s where
+  setVariable_ :: String -> FCRegister -> m FCRegister
+
+
+
 instance Show FCRegister where
   showsPrec _ VoidReg = showString ""
   showsPrec _ (Reg str) = showString str

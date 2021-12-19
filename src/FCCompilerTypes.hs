@@ -1,25 +1,11 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE ExistentialQuantification#-}
-module LLCompilerDefs (
-  -- ExpToFCStateMonad(prependFCRValue,
-  --                   getVariable,
-  --                   lookupStringName,
-  --                   isFunStatic),
-  -- InstrToFCStateMonad(setVariable,
-  --                     declareVariable,
-  --                     addBlock,
-  --                     addIfBlock,
-  --                     addIfElseBlock,
-  --                     addWhileBlock),
-  -- FCUnaryOperator(..),
-  -- FCBinaryOperator(..),
-  -- FCRegister(..),
-  -- FCRValue(..),
-  -- FCInstr(..),
-  -- FCBlock,
-  -- FCFun,
+module FCCompilerTypes (
+  FCUnaryOperator(..),
+  FCBinaryOperator(..),
+  FCRegister(..),
+  FCRValue(..),
+  FCInstr(..),
+  FCBlock(..),
+  FCFun,
   RegType(..))
 where
 
@@ -74,39 +60,6 @@ data FCBlock = FCSimpleBlock FCSimpleBlock |
 
 type FCFun = (String, [FCBlock])
 
-class (Ord key) => Environment a key value | a -> key value where
-  declareMapping :: key -> value -> a -> a
-  getMapping :: key -> a -> Maybe value
-  lookupMapping :: key -> a -> Bool
-  
-class (Environment a key value) => VariableEnvironment a key value | a -> key value where
-  setVariable :: key -> value -> a -> a
-  declareVariable :: key -> value -> a -> a
-  lookupVariable :: key -> a -> Bool
-  getManyVariables :: [key] -> a -> [Maybe value]
-  newClosure :: a -> a
-  oldClosure :: a -> a
-  getVariable :: key -> a -> Maybe value
-
-class LLRegisterState a where
-  nextNRegiter         ::  a -> a
-  nextPRegisert        ::  a -> a
-  lookupNextNRegister  ::  a -> FCRegister
-  lookupNextPRegister  :: a -> FCRegister
-
-class BlockBuilder a stmtType blockType | a -> stmtType blockType where
-  openNewBlock :: a -> a
-  closeBlock :: a -> a
-  prependStmt :: stmtType -> a -> a
-  prependBlock :: blockType -> a -> a
-  buildCurrentBlock :: a -> (a, blockType)
-  build :: a -> blockType
-
-data FCC venvData blockData regData constants=
-  (VariableEnvironment venvData String FCRegister,
-   BlockBuilder blockData FCInstr FCBlock,
-   LLRegisterState regData,
-   Environment constants String String) => FCC {regst:: regData, venv :: venvData, blockstate :: blockData, consts :: constants}
   
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
@@ -164,20 +117,20 @@ data BlockType = Normal | Cond | CondElse | While
 
 
 
--- instance Show FCRegister where
---   showsPrec _ VoidReg = showString ""
---   showsPrec _ (Reg str) = showString str
---   showsPrec y (LitBool x) = showsPrec y x
---   showsPrec y (LitInt x) = showsPrec y x
+instance Show FCRegister where
+  showsPrec _ VoidReg = showString ""
+  showsPrec _ (Reg str) = showString str
+  showsPrec y (LitBool x) = showsPrec y x
+  showsPrec y (LitInt x) = showsPrec y x
 
 
--- instance Convertable Tr.IAddOp FCBinaryOperator where
---   convert x = case x of
---     Tr.IPlus -> Add
---     Tr.IMinus -> Sub
+instance Convertable Tr.IAddOp FCBinaryOperator where
+  convert x = case x of
+    Tr.IPlus -> Add
+    Tr.IMinus -> Sub
 
--- instance Convertable Tr.IMulOp FCBinaryOperator where
---   convert x = case x of
---     Tr.ITimes -> Mul
---     Tr.IDiv -> Div
---     Tr.IMod -> Mod
+instance Convertable Tr.IMulOp FCBinaryOperator where
+  convert x = case x of
+    Tr.ITimes -> Mul
+    Tr.IDiv -> Div
+    Tr.IMod -> Mod

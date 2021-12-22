@@ -3,17 +3,23 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ExistentialQuantification#-}
 
-module FCCompilerState (VariableEnvironment(..)) where
+module FCCompilerState (VariableEnvironment(..),
+                        LLRegisterState(..),
+                        ConstantsEnvironment(..),
+                        BlockBuilder(..)) where
 
 import FCCompilerTypes
 -- import Control.Monad.State.Strict
 -- import Data.Map.Strict (Map)
 
 
-class (Ord key) => Environment a key value | a -> key value where
-  _declareMapping :: key -> value -> a -> a
-  _getMapping :: key -> a -> Maybe value
-  _lookupMapping :: key -> a -> Bool
+-- class (Ord key) => Environment a key value | a -> key value where
+--   _declareMapping :: key -> value -> a -> a
+--   _getMapping :: key -> a -> Maybe value
+--   _lookupMapping :: key -> a -> Bool
+
+class ConstantsEnvironment a key value | a -> key value where
+  _getPointer :: key -> a -> (a, value)
 
  -- (Environment a key value) =>
 class VariableEnvironment a key value | a -> key value where
@@ -26,18 +32,17 @@ class VariableEnvironment a key value | a -> key value where
   _getVariable :: key -> a -> Maybe value
 
 class LLRegisterState a where
-  _nextNRegiter         ::  a -> a
-  _nextPRegisert        ::  a -> a
-  _lookupNextNRegister  ::  a -> FCRegister
-  _lookupNextPRegister  :: a -> FCRegister
+  _lookupRegister :: FCRegister -> a -> Maybe FCRValue
+  _normalizeFCRValue :: FCRValue -> a -> FCRValue
+  _mapFCRValue    :: FCRValue -> a -> (a, Either FCRegister FCRegister)
+  _mapFCRValueRegType :: RegType -> FCRValue -> a -> (a, Either FCRegister FCRegister)
 
 class BlockBuilder a stmtType blockType | a -> stmtType blockType where
-  _openNewBlock :: a -> a
-  _closeBlock :: a -> a
+  -- _openNewBlock :: a -> a
+  -- _closeBlock :: a -> a
   _prependStmt :: stmtType -> a -> a
   _prependBlock :: blockType -> a -> a
-  _buildCurrentBlock :: a -> (a, blockType)
-  _build :: a -> blockType
+  _build :: a -> blockType 
 
 -- data FCC venvData blockData regData constants =
 --   (VariableEnvironment venvData String FCRegister,

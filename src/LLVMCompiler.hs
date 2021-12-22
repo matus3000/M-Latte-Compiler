@@ -19,21 +19,41 @@ import Translator(CompilerExcept, Convertable(..))
 import FCCompilerTypes
 import qualified Translator as Tr
 import qualified Data.Functor
-import FCCompilerState (VariableEnvironment(..))
+import FCCompilerState (VariableEnvironment(..),
+                        LLRegisterState(..),
+                        ConstantsEnvironment(..),
+                        BlockBuilder(..))
 
 data VarEnv = VarEnv { varmap :: DM.Map String [FCRegister],
                        modifiedVariables :: [DS.Set String],
                        redeclaredVariables :: [DS.Set String]
                      }
 
--- data RegSt = RegSt {nextNRIndex :: Int,
---                               next:: Int}
--- data ConstStringEnv = ConstStringEnv {stringMap::DM.Map String Int,
---                                       nextEtId :: Int}
--- data BlockState = BlockState { blockPrefix::String,
---                                nextBlockId :: Int,
---                                stmtsList :: [FCInstr],
---                                blockList :: [FCBlock]}
+data RegSt = RegSt { regMap :: DM.Map FCRegister FCRValue ,
+                     rvalueMap :: DM.Map FCRValue FCRegister,
+                     nextNormalId :: Int}
+
+data CompileTimeConstants = CTC {constMap :: DM.Map String String,
+                                 nextEtId :: Int}
+
+data CurrentSubblock = ConditionB | SuccessB | FailureB
+data BlockState = BlockState { blockName::String,
+                               nextBlockId::Int,
+                               stmtsList :: [FCInstr],
+                               blockList :: [FCBlock]} |
+                  CondBlockState {blockName :: String,
+                                   conditionBlock :: Maybe FCBlock,
+                                   success :: Maybe FCBlock,
+                                   failure :: Maybe FCBlock,
+                                   post :: Maybe FCBlock,
+                                   current :: BlockType} |
+                  WhileBlockState {blockName :: String,
+                                   conditionBlock :: Maybe FCBlock,
+                                   success :: Maybe FCBlock,
+                                   post :: Maybe FCBlock,
+                                   current :: BlockType
+                                  }
+
 
 -- data FCCState = FCCState {regSt :: RegSt,
 --                           varSt :: VarSt,
@@ -206,6 +226,7 @@ instance Convertable Tr.IRelOp FCBinaryOperator where
 -- instance ExpToFCStateMonad FCC where
 --   lookupStringName x = fccEmplaceConstString x
 
+
 instance VariableEnvironment VarEnv String FCRegister where
   _setVariable key value (VarEnv vmap modvars redvars) =
     let x = [] `fromMaybe` DM.lookup key vmap
@@ -226,5 +247,129 @@ instance VariableEnvironment VarEnv String FCRegister where
   _getManyVariables keys (VarEnv vmap modvars redvars) = map (\key -> head <$> DM.lookup key vmap) keys
   _getVariable key (VarEnv vmap modvars redvars) = head <$> DM.lookup key vmap
   _openClosure (VarEnv vmap modvars redvars) = VarEnv vmap (DS.empty : modvars) (DS.empty : redvars)
-  _closeClosure (VarEnv vmap modvars redvars) = VarEnv undefined undefined (tail redvars)
+  _closeClosure (VarEnv vmap modvars redvars) =
+    let
+      snd :: [a] -> Maybe a
+      snd (x:y:rest) = Just y
+      snd _ = Nothing
+      modified = head modvars
+      parent = DS.empty `fromMaybe` snd modvars
+      popKey :: String -> DM.Map String [a] -> DM.Map String [a]
+      popKey x map = DM.insert x vs map
+        where
+          (v:vs) = [] `fromMaybe` DM.lookup x map
+    in
+      VarEnv (foldl (\ map key -> undefined ) vmap (head redvars))
+      (DS.union modified parent:(tail.tail$modvars)) (tail redvars)
+
+instance LLRegisterState RegSt where
+  _lookupRegister reg (RegSt regMap rvalueMap nextNormalIbd) = DM.lookup reg regMap
+  _normalizeFCRValue fcrValue (RegSt regMap rvalueMap nextNormalIbd) =
+    case fcrValue of
+      original@(FCBinOp fbo fr fr') -> let norg = original in case fbo of
+        Add -> undefined
+        Sub -> original
+        Div -> undefined
+        Mul -> original
+        Mod -> original
+        LShift -> original
+        RShif -> original
+        ByteAnd -> original
+        ByteOr -> original
+        ByteXor -> original
+        BoolAnd -> original
+        BoolOr -> original
+        BoolXor -> original
+        Test -> undefined
+        Le -> original
+        Equ -> undefined
+        Neq -> undefined
+        Lth -> original
+        Gth -> original
+        Ge -> original
+      _ -> fcrValue
+  _mapFCRValue fcrValue regstate@(RegSt regMap rvalueMap nextNormalId) = case fcrValue' `DM.lookup` rvalueMap of
+    Nothing -> let
+      fr = Reg $ "%R" ++ show nextNormalId
+      regMap' = DM.insert fr fcrValue' regMap
+      rvalueMap' = DM.insert fcrValue' fr rvalueMap
+      in
+      (RegSt regMap' rvalueMap' (1 + nextNormalId), Right fr)
+    Just fr -> (regstate, Left fr)
+    where fcrValue' = _normalizeFCRValue fcrValue regstate
+
+instance ConstantsEnvironment CompileTimeConstants String String where
+  _getPointer str ctc@(CTC cmap next) = case DM.lookup str cmap of
+      Just v -> (ctc, v)
+      Nothing -> (CTC (DM.insert str ("C" ++ show next) cmap ) (next + 1), "C" ++ show next)
+
+instance BlockBuilder BlockState FCInstr FCBlock where
+--   _prependStmt fci (BlockState bN nBI sL bL) = BlockState bN nBI (fci:sL) bL
+--   _prependBlock fcb (BlockState bn nbi sl bl) = BlockState bn nbi [] bl'
+--     where
+--       bl' = fcb : (if null sl then bl else FCSimpleBlock ("Placeholder", sl) : bl)
+--   _build (BlockState bn nbi sl bl) = undefined
+
+data FCC = FCC {venv::VarEnv, regenv::RegSt, constants::CompileTimeConstants, blocks::[BlockState]}
+type FCCompiler = State FCC
+fccPutVenv :: VarEnv -> FCC -> FCC
+fccPutVenv ve' (FCC ve re c b) = FCC ve' re c b
+fccPutRegenv :: RegSt -> FCC -> FCC
+fccPutRegenv re' (FCC ve re c b) = FCC ve re' c b
+fccPutConstants :: CompileTimeConstants -> FCC -> FCC
+fccPutBlock :: [BlockState] -> FCC -> FCC
+fccPutConstants c' (FCC ve re c b) = FCC ve re c' b
+fccPutBlock b' (FCC ve re c b) = FCC ve re c b'
+
+blockStatePutCurrent :: BlockType -> BlockState -> BlockState
+blockStatePutCurrent st BlockState {} = undefined
+blockStatePutCurrent c' (CondBlockState bn cb s f p c) = CondBlockState bn cb s f p c'
+blockStatePutCurrent c' (WhileBlockState bn cb s p c) = WhileBlockState bn cb s p c'
+
+newSimpleBlock :: String -> Int -> BlockState
+newSimpleBlock s n = BlockState s n [] []
+
+prependFCRValue :: RegType -> FCRValue -> FCCompiler FCRegister
+prependFCRValue r rvalue = do
+  result <- _mapFCRValueRegType r rvalue . regenv <$> get
+  case snd result of
+    Left r' -> return r'
+    Right r' -> modify (fccPutRegenv $ fst result) >> return r'
+getConstStringEt :: String -> FCCompiler String
+getConstStringEt s = do
+  (consEnb, et) <- _getPointer s . constants <$> get
+  modify (fccPutConstants consEnb)
+  return et
+openBlock :: BlockType-> FCCompiler ()
+openBlock bt = do
+  _blocks <- blocks <$> get
+  let (b:rest) = _blocks
+      (nb, b') = case bt of
+        Normal -> (newSimpleBlock "placeholder" 0, b)
+        Cond -> (CondBlockState "placeholder" Nothing Nothing Nothing Nothing Check, b)
+        While -> (WhileBlockState "placeholder" Nothing Nothing Nothing Check, b)
+        rest -> case b of
+          BlockState{} -> undefined
+          b -> (newSimpleBlock "placeholder" 0, blockStatePutCurrent rest b)
+  modify (fccPutBlock (nb:b':rest))
+closeBlock :: FCCompiler ()
+closeBlock = do
+  fcc <- get
+  let ve' = _closeClosure . venv $ fcc
+      (h:p:tail) = blocks fcc
+      bl' = _build h
+      p' = _prependBlock bl' p
+  modify $ fccPutBlock (p':tail)
+protectVariables :: [String] -> FCCompiler ()
+protectVariables vars = do
+  ve <- venv <$> get
+  let ve' = foldl (\ve var ->
+                   case _getVariable var ve of
+                     Just val -> _declareVariable var val ve
+                     Nothing -> ve)
+          (_openClosure ve) vars
+  modify (fccPutVenv ve')
+endprotection :: FCCompiler ()
+endprotection = do
+  modify (\fcc -> fccPutVenv (_closeClosure $ venv fcc) fcc)
 

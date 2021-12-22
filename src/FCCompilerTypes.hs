@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiParamTypeClasses #-}
 module FCCompilerTypes (
   FCUnaryOperator(..),
   FCBinaryOperator(..),
@@ -6,7 +7,8 @@ module FCCompilerTypes (
   FCInstr(..),
   FCBlock(..),
   FCFun,
-  RegType(..))
+  RegType(..),
+  BlockType(..))
 where
 
 import Control.Monad.Except (Except, MonadError)
@@ -63,7 +65,7 @@ type FCFun = (String, [FCBlock])
   
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
-data BlockType = Normal | Cond | CondElse | While
+data BlockType = Normal | Cond | While | Check | Success | Failure | Post
 
 -- class (MonadError SemanticError a) => ExpToFCStateMonad a where
 --   lookupStringName     :: String -> a String

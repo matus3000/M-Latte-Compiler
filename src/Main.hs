@@ -17,9 +17,9 @@ import System.Environment (getArgs)
 import System.IO (stderr, hPutStrLn)
 import System.Exit
 
-import IDefinition as IDef
+import qualified IDefinition as IDef
 
-import Latte.Abs
+import qualified Latte.Abs as Lt
     (
       HasPosition(..),
       Ident(Ident),
@@ -38,10 +38,10 @@ import CompilationError (errorToString)
 type Err = Either String
 type ParseFun a = [Token] -> Err a
 
-compile :: Program -> CompilerExcept ()
+compile :: Lt.Program -> CompilerExcept ()
 compile program =
   do
-    programToInternal program
+    void $ (programToInternal . IDef.preprocessProgram)  program
 
 argumentError = 1
 grammarError = 2
@@ -49,7 +49,7 @@ grammarError = 2
 putStrLnStderr :: String -> IO()
 putStrLnStderr = hPutStrLn stderr
 
-runCompiler :: ParseFun Program -> String -> IO ()
+runCompiler :: ParseFun Lt.Program -> String -> IO ()
 runCompiler p s =
   case p ts of
     Left err -> do
@@ -66,7 +66,7 @@ runCompiler p s =
   where
     ts = myLexer s
 
-runFile :: ParseFun Program -> FilePath  -> IO()
+runFile :: ParseFun Lt.Program -> FilePath  -> IO()
 runFile p f = readFile f >>= runCompiler p
 
 run :: [String] -> IO()

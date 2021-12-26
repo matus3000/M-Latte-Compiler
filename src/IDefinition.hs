@@ -1,24 +1,67 @@
 
+{-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE FlexibleInstances #-}
-module IDefinition (LType(..), VarType(..), convertType, getArgLType,
-                   topDefArgs, topDefBlock,
-                   Indexed(..), getPosition, TypeClass(..)
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PatternSynonyms #-}
+
+module IDefinition (LType(..),
+                    VarType(..),
+                    Program,
+                    EnrichedProgram'(..),
+                    Block,
+                    TopDef,
+                    EnrichedTopDef'(..),
+                    Arg,
+                    Arg'(..),
+                    EnrichedBlock'(..),
+                    Stmt,
+                    EnrichedStmt' (..),
+                    Item,
+                    Item'(..),
+                    Type,
+                    Type'(..),
+                    Expr,
+                    Expr'(..),
+                    AddOp,
+                    AddOp'(..),
+                    MulOp,
+                    MulOp'(..),
+                    RelOp,
+                    RelOp'(..),
+                    Ident(..),
+                    convertType,
+                    getArgLType,
+                    topDefArgs,
+                    topDefBlock,
+                    Indexed(..),
+                    getPosition,
+                    TypeClass(..),
                    ) where
 
 import Prelude
 import Data.Set (Set)
+import qualified Data.Set as DS
 import Data.Map (Map)
 import Latte.Abs
-    ( TopDef,
-      Arg,
+    ( Arg,
       Arg'(Arg),
+      AddOp,
+      AddOp'(..),
+      MulOp,
+      MulOp'(..),
+      RelOp,
+      RelOp'(..),
       Ident(..),
       Type'(Fun, Int, Str, Bool, Void),
-      TopDef'(FnDef),
-      Block,
       Item,
       Item'(Init, NoInit),
-      Type, HasPosition (hasPosition) )
+      Type,
+      HasPosition (hasPosition),
+      BNFC'Position,
+      Expr,
+      Expr'(..))
+import qualified Latte.Abs as Lt
 import Data.Maybe (fromMaybe)
 
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType]
@@ -27,8 +70,88 @@ data LType = LInt | LString | LBool | LVoid | LFun LType [LType]
 data VarType = StaticInt Int | DynamicInt | StaticBool Bool | DynamicBool |
               StaticString String | DynamicString
 
+type ModifiedVariables = Set String
+type DeclaredVariables = Set String
 
-data VariableEnvironment = VEnv (Set String) (Map String VarType)
+type Program = EnrichedProgram' BNFC'Position
+data EnrichedProgram' a = Program a [EnrichedTopDef' a]
+
+type TopDef = EnrichedTopDef' BNFC'Position
+data EnrichedTopDef' a = FnDef a (Type' a) Ident [Arg' a] (EnrichedBlock' a)
+
+type Block = EnrichedBlock' BNFC'Position
+data EnrichedBlock' a = Block a [EnrichedStmt' a]
+
+type Stmt = EnrichedStmt' BNFC'Position
+data EnrichedStmt' a
+    = Empty a
+    | BStmt a (EnrichedBlock' a)
+    | Decl a (Type' a) [Item' a]
+    | Ass a Ident (Expr' a)
+    | Incr a Ident
+    | Decr a Ident
+    | Ret a (Expr' a)
+    | VRet a
+    | Cond a (Expr' a) (EnrichedStmt' a) ModifiedVariables
+    | CondElse a (Expr' a) (EnrichedStmt' a) (EnrichedStmt' a) ModifiedVariables
+    | While a (Expr' a) (EnrichedStmt' a) ModifiedVariables
+    | SExp a (Expr' a)
+
+
+preprocessProgram :: Lt.Program -> Program
+preprocessProgram (Lt.Program a topdefs) = Program a topdefs'
+  where
+    topdefs' = map f topdefs
+    f :: Lt.TopDef -> TopDef
+    f (Lt.FnDef a _type id args block) = FnDef a _type id args (g block)
+    g :: Lt.Block  -> Block
+    g block@(Lt.Block a _) = block'
+      where
+        (BStmt a block', _, _) = stmtToEnrichedStmt (Lt.BStmt a block) DS.empty DS.empty
+
+stmtToEnrichedStmt :: Lt.Stmt -> ModifiedVariables -> DeclaredVariables -> (Stmt, ModifiedVariables, DeclaredVariables)
+stmtToEnrichedStmt stmt md rd = case stmt of
+  Lt.Empty a -> (Empty a, md, rd)
+  Lt.Ass a (Ident x) rest -> let mv = if x `DS.member` rd then md else DS.insert x md
+                             in
+                               (Ass a (Ident x) rest, mv, rd)
+  Lt.Incr a (Ident x) -> (Incr a (Ident x), if x `DS.member` rd then md else DS.insert x md, rd)
+  Lt.Decr a (Ident x) -> (Decr a (Ident x), if x `DS.member` rd then md else DS.insert x md, rd)
+  Lt.Decl a dtype items -> (Decl a dtype items, md, itemListToRedeclared items rd)
+    where
+    itemListToRedeclared :: [Item' a] -> DS.Set String -> DS.Set String
+    itemListToRedeclared list set = foldl f set list
+      where
+        f :: DS.Set String -> Item' a -> DS.Set String
+        f set (NoInit _ (Ident x)) = DS.insert x set
+        f set (Init _ (Ident x) _) = DS.insert x set
+  Lt.SExp a expr -> (SExp a expr, md, rd)
+  Lt.BStmt a block -> (BStmt a newBlock, modified, rd)
+    where
+      (Lt.Block b stmts) = block
+      f :: [Lt.Stmt]  -> ([EnrichedStmt' BNFC'Position], DS.Set String, DS.Set String)
+      f list = foldl
+        (\(list, md, rd) stmt ->
+           let
+             (stmt', md', rd') = stmtToEnrichedStmt stmt md rd
+           in
+             (stmt':list, md', rd))
+        ([], DS.empty , rd)
+        list
+      (stmts', modified, _) = f stmts
+      newBlock = Block b stmts'
+  Lt.VRet a -> (VRet a, md, rd)
+  Lt.Ret a expr -> (Ret a expr, md, rd)
+  Lt.Cond a expr stmt -> (Cond a expr stmt' modified, modified, DS.empty)
+    where
+      (stmt', modified, _) = stmtToEnrichedStmt stmt md rd
+  Lt.CondElse a expr stmt1 stmt2 -> (CondElse a expr stmt1' stmt2' modified, modified, rd)
+    where
+      (stmt1', modified1, _) = stmtToEnrichedStmt stmt1 md rd
+      (stmt2', modified, _) = stmtToEnrichedStmt stmt2 modified1 rd
+  Lt.While a expr stmt -> (While a expr stmt' md', md', rd)
+    where
+      (stmt', md', _) = stmtToEnrichedStmt stmt md rd
 
 convertType :: Type -> LType
 convertType (Int _) = LInt
@@ -53,6 +176,9 @@ class Indexed a where
 
 instance Indexed Arg where
   getId (Arg _ _ id) = id
+
+instance Indexed Lt.TopDef where
+  getId (Lt.FnDef _ _ id _ _ ) = id
 
 instance Indexed TopDef where
   getId (FnDef _ _ id _ _ ) = id

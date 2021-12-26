@@ -69,6 +69,8 @@ vEnvPop str vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str ma
 data IType = StaticInt Integer | DynamicInt | StaticBool Bool | DynamicBool |
               StaticString String | DynamicString
 
+data MetaData = MD
+
 data IStmt =  IBStmt IBlock |
   IDecl [IItem] |
   IAss String IExpr |
@@ -80,7 +82,10 @@ data IStmt =  IBStmt IBlock |
   ICondElse IExpr IStmt IStmt |
   IWhile IExpr IStmt |
   ISExp IExpr |
-  IStmtEmpty
+  IStmtEmpty |
+  ICond2 IExpr IStmt MetaData |
+  ICondElse2 IExpr IStmt MetaData |
+  IWhile2 IExpr IStmt MetaData
 
 newtype IBlock = IBlock [IStmt]
 

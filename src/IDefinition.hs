@@ -6,7 +6,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 
 module IDefinition (LType(..),
-                    VarType(..),
+                    -- VarType(..),
                     Program,
                     EnrichedProgram'(..),
                     Block,
@@ -30,6 +30,7 @@ module IDefinition (LType(..),
                     RelOp,
                     RelOp'(..),
                     Ident(..),
+                    BNFC'Position(..),
                     convertType,
                     getArgLType,
                     topDefArgs,
@@ -37,6 +38,8 @@ module IDefinition (LType(..),
                     Indexed(..),
                     getPosition,
                     TypeClass(..),
+                    HasPosition(..),
+                    preprocessProgram
                    ) where
 
 import Prelude
@@ -57,8 +60,8 @@ import Latte.Abs
       Item,
       Item'(Init, NoInit),
       Type,
-      HasPosition (hasPosition),
-      BNFC'Position,
+      HasPosition (..),
+      BNFC'Position(..),
       Expr,
       Expr'(..))
 import qualified Latte.Abs as Lt
@@ -67,8 +70,8 @@ import Data.Maybe (fromMaybe)
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType]
   deriving Eq
 
-data VarType = StaticInt Int | DynamicInt | StaticBool Bool | DynamicBool |
-              StaticString String | DynamicString
+-- data VarType = StaticInt Int | DynamicInt | StaticBool Bool | DynamicBool |
+--               StaticString String | DynamicString
 
 type ModifiedVariables = Set String
 type DeclaredVariables = Set String
@@ -167,6 +170,29 @@ topDefArgs :: TopDef -> [Arg]
 topDefArgs (FnDef _ _ _ args _) = args
 topDefBlock :: TopDef -> Block
 topDefBlock (FnDef _ _ _ _ block) = block
+
+instance HasPosition TopDef where
+  hasPosition = \case
+    FnDef p _ _ _ _ -> p
+
+instance HasPosition Block where
+  hasPosition = \case
+    Block p _ -> p
+
+instance HasPosition Stmt where
+  hasPosition = \case
+    Empty p -> p
+    BStmt p _ -> p
+    Decl p _ _ -> p
+    Ass p _ _ -> p
+    Incr p _ -> p
+    Decr p _ -> p
+    Ret p _ -> p
+    VRet p -> p
+    Cond p _ _ _ -> p
+    CondElse p _ _ _ _ -> p
+    While p _ _ _ -> p
+    SExp p _ -> p
 
 class Indexed a where
   getId :: a -> Ident

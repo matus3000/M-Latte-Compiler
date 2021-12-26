@@ -14,9 +14,10 @@ module Translator(programToInternal,
                   IMulOp(..)) where
 
 
-import IDefinition(LType(..), Indexed(..), getArgLType, convertType, topDefBlock, topDefArgs, getPosition, TypeClass (..), VarType ())
+import IDefinition
+
+
 import CompilationError
-import Latte.Abs
 
 import Prelude
 import Data.Maybe (fromMaybe)
@@ -33,7 +34,6 @@ import qualified Data.Bifunctor
 import Data.Bifunctor (Bifunctor(first))
 import qualified Control.Arrow as BiFunctor
 import qualified Control.Arrow as Data.BiFunctor
-import Lexer (PState(context))
 
 data VariableEnvironment = VEnv (DS.Set String) (DM.Map String [IType])
 
@@ -284,7 +284,7 @@ f (EVar pos (Ident varId)) = do
 f (EApp pos (Ident funId) exps) = do
   fEnv <- ask
   let funData = funId `DM.lookup` fEnv
-      errPos = ((-1, -1) `fromMaybe` pos)
+      errPos = (-1, -1) `fromMaybe` pos
   case funData of
     Nothing -> throwErrorInContext (UndefinedFun ((-1, -1) `fromMaybe` pos) funId)
     Just (rType, argTypes) -> do
@@ -438,7 +438,7 @@ stmtsToInternal ((VRet pos):rest) =   do
   unless (funType `same` LVoid) $ throwErrorInContext
     (WrongReturnType ((-1,-1) `fromMaybe` pos) funType LVoid)
   return ([IVRet], True)
-stmtsToInternal ((Cond pos expr stmt): rest) = do
+stmtsToInternal ((Cond pos expr stmt md): rest) = do
   (itype, iexpr) <- exprToInternal expr
   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
   case itype of
@@ -447,9 +447,9 @@ stmtsToInternal ((Cond pos expr stmt): rest) = do
     _ -> do
       (istmt, returnBoolean) <- stmtsToInternal [stmt]
       (irest, restBool) <- stmtsToInternal rest
-      return ((head istmt):irest, restBool)
-      
-stmtsToInternal ((CondElse pos expr stmt1 stmt2):rest) =
+      return (head istmt:irest, restBool)
+
+stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
   do
     (itype, iexpr) <- exprToInternal expr
     unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
@@ -462,7 +462,7 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2):rest) =
         if returnBoolean1 && returnBoolean2
           then return ([ICondElse iexpr (head istmt1) (head istmt2)], True)
           else BiFunctor.first (ICondElse iexpr (head istmt1) (head istmt2):) <$> stmtsToInternal rest
-stmtsToInternal ((While pos expr stmt):rest) = do
+stmtsToInternal ((While pos expr stmt md):rest) = do
   (itype, iexpr) <- exprToInternal expr
   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
   case itype of
@@ -596,11 +596,11 @@ class TypedBiOperator a b where
 
 instance TypedBiOperator AddOp LType where
   assertOp op@(Plus _) left right = do
-    (a,b,pos) <- fst <$> get
+    (a,b,pos) <- gets fst
     unless ((left `same` right) && ((left `same` LInt)  || (left `same` LString))) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
   assertOp op@(Minus _) left right = do
-    (a,b,pos) <- fst <$> get
+    (a,b,pos) <- gets fst
     unless ((left `same` right) && (left `same` LInt)) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
 
@@ -619,7 +619,7 @@ assertDivision _ _= return ()
 
 instance TypedBiOperator MulOp LType where
   assertOp op left right = do
-    (a,b,pos) <- fst <$> get
+    (a,b,pos) <- gets fst
     unless ((left `same` right) && (left `same` LInt)) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
 instance TypedBiOperator MulOp IType where
@@ -631,7 +631,7 @@ instance TypedBiOperator RelOp LType where
   assertOp op x y = let
     errorFun :: (Int, Int) -> LType -> LType -> Compiler FunTranslationEnvironment ()
     errorFun pos ltype rtype = do
-      (a, b, context) <- fst <$> get
+      (a, b, context) <- gets fst
       throwError (SemanticError pos $BinaryTypeConflict pos (ltype, rtype))
     tmp :: RelOp -> LType -> LType -> Compiler FunTranslationEnvironment ()
     tmp op@(EQU _) x y = do

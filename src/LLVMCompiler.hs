@@ -2,6 +2,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+-- TO DO:
+-- a) Zamienić mapM getVar foldable na getVars
 module LLVMCompiler (FCBinaryOperator(..),
                      FCRegister(..),
                      FCRValue(..),
@@ -16,7 +18,7 @@ import Control.Monad.Except (Except, MonadError)
 
 import CompilationError(SemanticError, SemanticError(CompilationError))
 import Translator(CompilerExcept, Convertable(..))
-import FCCompilerTypes
+import FCCompilerTypes as FCT
 import qualified Translator as Tr
 import qualified Data.Functor
 import FCCompilerState (VariableEnvironment(..),
@@ -39,47 +41,25 @@ data CompileTimeConstants = CTC {constMap :: DM.Map String String,
 data CurrentSubblock = ConditionB | SuccessB | FailureB
 data BlockState = BlockState { blockName::String,
                                nextBlockId::Int,
+                               openedSimpleBlocks :: Int,
                                stmtsList :: [FCInstr],
                                blockList :: [FCBlock]} |
                   CondBlockState {blockName :: String,
+                                   openedSimpleBlocks :: Int,
                                    conditionBlock :: Maybe FCBlock,
+                                   conditionReg :: Maybe FCRegister,
                                    success :: Maybe FCBlock,
                                    failure :: Maybe FCBlock,
                                    post :: Maybe FCBlock,
                                    current :: BlockType} |
                   WhileBlockState {blockName :: String,
+                                   openedSimpleBlocks :: Int,
                                    conditionBlock :: Maybe FCBlock,
                                    success :: Maybe FCBlock,
                                    post :: Maybe FCBlock,
                                    current :: BlockType
                                   }
 
-
--- data FCCState = FCCState {regSt :: RegSt,
---                           varSt :: VarSt,
---                           constEnv :: ConstStringEnv,
---                           blockSt :: BlockState}
-
--- type FCC = StateT FCCState CompilerExcept
-
--- type NormaliziedFCRValue = FCRValue
-
--- data ExpressionMap = ExpressionMap {expToReg:: DM.Map NormaliziedFCRValue FCRegister,
---                                     regToExp:: DM.Map FCRegister NormaliziedFCRValue }
-
--- normalizeExpression :: FCRValue -> ExpressionMap -> NormaliziedFCRValue
--- normalizeExpression expr eMap = undefined
-
--- expressionMapEmplace :: ExpressionMap -> FCRegister -> FCRValue -> (ExpressionMap, FCRegister)
--- expressionMapEmplace eMap reg rvalue = let
---   expMap = expToReg eMap
---   rMap = regToExp eMap
---   normalizedRValue = normalizeExpression rvalue eMap
---   searchResult = DM.lookup normalizedRValue expMap
---   in
---   case searchResult of
---     Just fr -> (eMap, fr)
---     Nothing -> (ExpressionMap (DM.insert normalizedRValue reg expMap) (DM.insert reg normalizedRValue rMap), reg)
 
 data FCBOType = Arithmetic | Boolean | Relation | Bitwise
 
@@ -101,94 +81,157 @@ binOpGetType x = case x of
   Test -> Boolean
 
 
--- translateExpr :: (ExpToFCStateMonad a) => Tr.IExpr -> Bool -> a FCRegister
--- translateExpr x save =
---   let
---     translateExprAddMull x save =
---       let
---         u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
---         u@(op, ie1, ie2) = case x of
---           Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
---           Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
---           _ -> undefined
---       in
---         do
---           r1 <- translateExpr ie2 True
---           r2 <- translateExpr ie1 True
---           prependFCRValue RNormal $ FCBinOp op r1 r2
---   in
---     case x of
---       Tr.ILitInt n -> return $ (LitInt . fromInteger) n
---       Tr.ILitBool b -> return $ LitBool b
---       Tr.IString s -> do
---         constEt <- lookupStringName s
---         prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
---       Tr.IVar s -> getVariable s Data.Functor.<&> fromMaybe undefined
---       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
---       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
---       Tr.INeg ie -> do
---         reg <- translateExpr ie True
---         prependFCRValue RNormal $ FCUnOp Neg reg
---       Tr.INot ie -> do
---         reg <- translateExpr ie True
---         prependFCRValue RNormal $ FCUnOp BoolNeg reg
---       Tr.IAnd ie ie' -> do
---         r2 <- translateExpr ie' True
---         r1 <- translateExpr ie True
---         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
---       Tr.IOr ie ie' -> do
---         r2 <- translateExpr ie' True
---         r1 <- translateExpr ie True
---         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
---       Tr.IApp fun ies -> let
---         r ::(ExpToFCStateMonad a) =>  Bool -> Bool -> a FCRegister
---         r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
---           do
---             args <- mapM (`translateExpr` True) (reverse ies)
---             prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
---               FunCall fun args
---         in
---         isFunStatic fun >>= r True
---       Tr.IRel iro ie ie' -> do
---         r2 <- translateExpr ie' True
---         r1 <- translateExpr ie True
---         prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
+translateExpr :: Tr.IExpr -> Bool -> FCCompiler FCRegister
+translateExpr x save =
+  let
+    translateExprAddMull x save =
+      let
+        u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
+        u@(op, ie1, ie2) = case x of
+          Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
+          Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
+          _ -> undefined
+      in
+        do
+          r1 <- translateExpr ie2 True
+          r2 <- translateExpr ie1 True
+          prependFCRValue RNormal $ FCBinOp op r1 r2
+  in
+    case x of
+      Tr.ILitInt n -> return $ (LitInt . fromInteger) n
+      Tr.ILitBool b -> return $ LitBool b
+      Tr.IString s -> do
+        constEt <- getConstStringEt s
+        prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
+      Tr.IVar s -> getVar s
+      addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
+      mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
+      Tr.INeg ie -> do
+        reg <- translateExpr ie True
+        prependFCRValue RNormal $ FCUnOp Neg reg
+      Tr.INot ie -> do
+        reg <- translateExpr ie True
+        prependFCRValue RNormal $ FCUnOp BoolNeg reg
+      Tr.IAnd ie ie' -> do
+        r2 <- translateExpr ie' True
+        r1 <- translateExpr ie True
+        prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+      Tr.IOr ie ie' -> do
+        r2 <- translateExpr ie' True
+        r1 <- translateExpr ie True
+        prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+      Tr.IApp fun ies -> let
+        r ::  Bool -> Bool -> FCCompiler FCRegister
+        r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
+          do
+            args <- mapM (`translateExpr` True) (reverse ies)
+            prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
+              FunCall fun args
+        in
+        isFunStatic fun >>= r True
+      Tr.IRel iro ie ie' -> do
+        r2 <- translateExpr ie' True
+        r1 <- translateExpr ie True
+        prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
 
--- translateIItem :: (InstrToFCStateMonad a) => Tr.IItem -> a ()
--- translateIItem (Tr.IItem s expr) = void $
---   do
---     mreg <- getVariable s
---     case mreg of
---       Just reg -> setVariable s reg
---       Nothing -> undefined
+translateIItem :: Tr.IItem -> FCCompiler ()
+translateIItem (Tr.IItem s ie) = void $
+  do
+    reg <- translateExpr ie True
+    declVar s reg
 
--- translateInstr :: (InstrToFCStateMonad a) => Tr.IStmt -> a ()
--- translateInstr stmt = case stmt of
---   Tr.IBStmt ib -> translateBlock ib
---   Tr.IDecl iis -> void $ do
---     iis <- mapM translateIItem (reverse iis)
---     return  ()
---   Tr.IAss s ie -> void $ do
---     mreg <- getVariable s
---     case mreg of
---       Just reg -> declareVariable s reg
---       Nothing -> undefined
---   Tr.IIncr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
---   Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
---   Tr.IRet ie -> void $ do
---     r <- translateExpr ie True
---     prependFCRValue RVoid $ Return (Just r)
---   Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
---   Tr.ICond ie is -> do
---     addIfBlock (ie, is) (`translateExpr` True) translateInstr
---   Tr.ICondElse ie is is' -> addIfElseBlock (ie, is, is') (`translateExpr` True) translateInstr
---   Tr.IWhile ie is -> addWhileBlock (ie, is) (`translateExpr` True) translateInstr
---   Tr.ISExp ie -> void $ translateExpr ie False
---   Tr.IStmtEmpty -> return ()
+translateInstr :: Tr.IStmt -> FCCompiler ()
+translateInstr stmt = case stmt of
+  Tr.IBStmt ib -> translateBlock ib
+  Tr.IDecl iis -> void $ do
+    iis <- mapM translateIItem (reverse iis)
+    return  ()
+  Tr.IAss s ie -> do
+    reg <- translateExpr ie True
+    setVar s reg
+  Tr.IIncr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
+  Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
+  Tr.IRet ie -> void $ do
+    r <- translateExpr ie True
+    prependFCRValue RVoid $ Return (Just r)
+  Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
+  Tr.ICond ie iblock (Tr.MD md) -> do
+    let ascmd = DS.toAscList md
+    parname <- getBlockName
+    openBlock Cond
 
--- translateBlock :: (InstrToFCStateMonad a) => Tr.IBlock -> a ()
--- translateBlock (Tr.IBlock stmts) = do
---   addBlock (reverse stmts) (mapM_ translateInstr)
+
+    oldVal <- mapM getVar ascmd
+    openBlock Check
+    r <- translateExpr ie True
+    closeBlock
+
+    openBlock Success
+    sname <- getBlockName
+    translateBlock iblock
+    smd <- mapM getVar ascmd
+    closeBlock
+
+    openBlock Post
+    phi ascmd (parname, oldVal) (sname, smd)
+    closeBlock
+
+    closeBlock
+  Tr.ICondElse ie ib ib' (Tr.MD md) -> do
+    let ascmd = DS.toAscList md
+    openBlock Cond
+
+    openBlock Check
+    r <- translateExpr ie True
+    closeBlock
+
+    openBlock Success
+    sname <- getBlockName
+    translateBlock ib
+    smd <- mapM getVar ascmd
+    closeBlock
+
+    openBlock Failure
+    fname <- getBlockName
+    translateBlock ib'
+    fmd <- mapM getVar ascmd
+    closeBlock
+
+    openBlock Post
+    phi ascmd (sname, smd) (fname, fmd)
+    closeBlock
+
+    closeBlock
+  Tr.IWhile ie ib (Tr.MD md) -> do
+    let ascmd = DS.toAscList md
+    parName <- getBlockName
+    oldValues <- mapM getVar ascmd
+
+    openBlock While
+
+    openBlock Check
+    r <- translateExpr ie True
+    closeBlock
+
+    openBlock Success
+    sname <- getBlockName
+    translateBlock ib
+    smd <- mapM getVar ascmd
+    closeBlock
+
+    openBlock Post
+    phi ascmd (parName, oldValues) (sname, smd)
+    closeBlock
+
+    closeBlock
+
+  Tr.ISExp ie -> void $ translateExpr ie False
+  Tr.IStmtEmpty -> return ()
+
+translateBlock :: Tr.IBlock -> FCCompiler ()
+translateBlock (Tr.IBlock stmts) = do
+  undefined
+  -- addBlock (reverse stmts) (mapM_ translateInstr)
 
 -- compileBlock :: Tr.IBlock -> CompilerExcept [FCBlock]
 -- compileBlock = undefined
@@ -304,11 +347,17 @@ instance ConstantsEnvironment CompileTimeConstants String String where
       Nothing -> (CTC (DM.insert str ("C" ++ show next) cmap ) (next + 1), "C" ++ show next)
 
 instance BlockBuilder BlockState FCInstr FCBlock where
---   _prependStmt fci (BlockState bN nBI sL bL) = BlockState bN nBI (fci:sL) bL
---   _prependBlock fcb (BlockState bn nbi sl bl) = BlockState bn nbi [] bl'
---     where
---       bl' = fcb : (if null sl then bl else FCSimpleBlock ("Placeholder", sl) : bl)
---   _build (BlockState bn nbi sl bl) = undefined
+  _build (BlockState bn nbi 0 sl bl) = FCComplexBlock (FCSimpleBlock ("PlaceHolder", sl) : bl)
+  _build BlockState {} = undefined
+  _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) Nothing (Just postBlock) _) =
+    FCCondBlock conBlock successBlock postBlock
+  _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) (Just failureBlock) (Just postBlock) _) =
+    FCCondElseBlock conBlock successBlock failureBlock postBlock
+  _build CondBlockState{} = undefined
+  _build (WhileBlockState bname _ (Just cb) (Just s) (Just p) _) =
+    FCWhileBlock cb s p
+  _build WhileBlockState{} = undefined
+
 
 data FCC = FCC {venv::VarEnv, regenv::RegSt, constants::CompileTimeConstants, blocks::[BlockState]}
 type FCCompiler = State FCC
@@ -321,13 +370,21 @@ fccPutBlock :: [BlockState] -> FCC -> FCC
 fccPutConstants c' (FCC ve re c b) = FCC ve re c' b
 fccPutBlock b' (FCC ve re c b) = FCC ve re c b'
 
-blockStatePutCurrent :: BlockType -> BlockState -> BlockState
-blockStatePutCurrent st BlockState {} = undefined
-blockStatePutCurrent c' (CondBlockState bn cb s f p c) = CondBlockState bn cb s f p c'
-blockStatePutCurrent c' (WhileBlockState bn cb s p c) = WhileBlockState bn cb s p c'
+-- blockStatePutCurrent :: BlockType -> BlockState -> BlockState
+-- blockStatePutCurrent st BlockState {} = undefined
+-- blockStatePutCurrent c' (CondBlockState bn x cb s f p c) = CondBlockState bn x cb s f p c' --TO DO 
+-- blockStatePutCurrent c' (WhileBlockState bn cb s p c) = WhileBlockState bn cb s p c'
 
 newSimpleBlock :: String -> Int -> BlockState
-newSimpleBlock s n = BlockState s n [] []
+newSimpleBlock s n = BlockState s n 0 [] []
+
+newCondBlockSt :: String -> BlockState
+newCondBlockSt name = CondBlockState name 0 Nothing Nothing Nothing Nothing Nothing BTPlacceHolder
+newWhileBlockSt :: String -> BlockState
+newWhileBlockSt name = WhileBlockState name 0 Nothing Nothing Nothing BTPlacceHolder
+
+isFunStatic :: String -> FCCompiler Bool
+isFunStatic _ = return False
 
 prependFCRValue :: RegType -> FCRValue -> FCCompiler FCRegister
 prependFCRValue r rvalue = do
@@ -340,36 +397,113 @@ getConstStringEt s = do
   (consEnb, et) <- _getPointer s . constants <$> get
   modify (fccPutConstants consEnb)
   return et
+
 openBlock :: BlockType-> FCCompiler ()
 openBlock bt = do
-  _blocks <- blocks <$> get
-  let (b:rest) = _blocks
-      (nb, b') = case bt of
-        Normal -> (newSimpleBlock "placeholder" 0, b)
-        Cond -> (CondBlockState "placeholder" Nothing Nothing Nothing Nothing Check, b)
-        While -> (WhileBlockState "placeholder" Nothing Nothing Nothing Check, b)
-        rest -> case b of
-          BlockState{} -> undefined
-          b -> (newSimpleBlock "placeholder" 0, blockStatePutCurrent rest b)
-  modify (fccPutBlock (nb:b':rest))
+  fcc <- get
+  let ve' = _openClosure $ venv fcc
+      (parent:rest) = blocks fcc
+      newBlocks = case parent of
+        (BlockState bN nBI oSB sL bL) ->
+          case bt of
+            Normal -> BlockState bN nBI (oSB + 1) sL bL:rest
+            Cond -> newCondBlockSt (bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock ("", sL):bL):rest)
+            While -> newWhileBlockSt(bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock ("", sL):bL):rest)
+            _ -> undefined
+        (CondBlockState bn osb cb cr s f p c) ->
+          case bt of
+            Check -> BlockState bn 0 0 [] [] :CondBlockState bn osb cb cr s f p bt :rest
+            Success -> BlockState bn' 0 0 [] [] :CondBlockState bn osb cb cr s f p bt :rest
+              where
+                bn' = bn ++ "s"
+            Failure -> BlockState bn' 0 0 [] [] :CondBlockState bn osb cb cr s f p bt :rest
+              where
+                bn' = bn ++ "f"
+            Post -> BlockState bn' 0 0 [] [] :CondBlockState bn osb cb cr s f p bt :rest
+              where
+                bn' = bn ++ "p"
+            _ -> undefined
+        (WhileBlockState bn osb cb s p c) ->
+          case bt of
+            Check -> BlockState bn' 0 0 [] [] :WhileBlockState bn osb cb s p bt: rest
+              where
+                bn' = bn
+            Success -> BlockState bn' 0 0 [] [] :WhileBlockState bn osb cb s p bt: rest
+              where
+                bn' = bn ++ "s"
+            Post -> BlockState bn' 0 0 [] [] :WhileBlockState bn osb cb s p bt: rest
+              where
+                bn' = bn ++ "p"
+            _ -> undefined
+  modify $ fccPutVenv ve' . fccPutBlock newBlocks
 closeBlock :: FCCompiler ()
 closeBlock = do
   fcc <- get
   let ve' = _closeClosure . venv $ fcc
-      (h:p:tail) = blocks fcc
-      bl' = _build h
-      p' = _prependBlock bl' p
-  modify $ fccPutBlock (p':tail)
-protectVariables :: [String] -> FCCompiler ()
-protectVariables vars = do
-  ve <- venv <$> get
-  let ve' = foldl (\ve var ->
-                   case _getVariable var ve of
-                     Just val -> _declareVariable var val ve
-                     Nothing -> ve)
-          (_openClosure ve) vars
-  modify (fccPutVenv ve')
-endprotection :: FCCompiler ()
-endprotection = do
-  modify (\fcc -> fccPutVenv (_closeClosure $ venv fcc) fcc)
+      newBlocks = []
+  modify $ fccPutVenv ve' . fccPutBlock newBlocks
+  where
+    f :: [BlockState] -> [BlockState]
+    f (blockSt@(BlockState _ _ 0 _ _) : CondBlockState bn osb cb cr s f p c : rest) =
+      case c of
+        Check -> CondBlockState bn osb (Just block) cr s f p c' : rest
+        Success -> CondBlockState bn osb cb cr (Just block) f p c' : rest
+        Failure -> CondBlockState bn osb cb cr s (Just block) p c' : rest
+        Post -> CondBlockState bn osb cb cr s f (Just block) c' : rest
+        _ -> undefined
+        where
+          block = _build blockSt
+          c' = BTPlacceHolder
+    f (blockSt@(BlockState _ _ 0 _ _) : WhileBlockState bn osb cb s p c : rest) =
+      case c of
+        Check -> WhileBlockState bn osb cb s p c' : rest
+        Success -> WhileBlockState bn osb cb s p c' : rest
+        Post -> WhileBlockState bn osb cb s p c' : rest
+        _ -> undefined
+        where
+          block = _build blockSt
+          c' = BTPlacceHolder
+    f (blockSt@(BlockState _ _ 0 _ _) : (BlockState bn nbi osb sl bl) : rest) =
+      BlockState bn nbi osb sl (_build blockSt:bl):rest
+    f (BlockState bn nBI r sL bL : rest) = BlockState bn nBI (r - 1) sL bL : rest
+    f _ = undefined
 
+-- protectVariables :: [String] -> FCCompiler ()
+-- protectVariables vars = do
+--   ve <- venv <$> get
+--   let ve' = foldl (\ve var ->
+--                    case _getVariable var ve of
+--                      Just val -> _declareVariable var val ve
+--                      Nothing -> ve)
+--           (_openClosure ve) vars
+--   modify (fccPutVenv ve')
+-- endprotection :: FCCompiler ()
+-- endprotection = do
+--   modify (\fcc -> fccPutVenv (_closeClosure $ venv fcc) fcc)
+
+getBlockName :: FCCompiler String
+getBlockName =
+  do
+    x <- gets blocks
+    return $ case x of
+      (BlockState name _ _ _ _):rest -> name
+      (CondBlockState name _ _ _ _ _ _ _):rest -> name
+      (WhileBlockState name _ _ _ _ _):rest -> name
+      _ -> undefined
+
+getVar :: String -> FCCompiler FCRegister
+getVar var = do
+  value <- gets (_getVariable var . venv)
+  return $ undefined `fromMaybe` value
+setVar :: String -> FCRegister -> FCCompiler ()
+setVar var value = do
+  vars' <- gets $ _setVariable var value . venv
+  modify $ fccPutVenv vars'
+
+declVar :: String -> FCRegister -> FCCompiler ()
+declVar var value = do
+  vars' <- gets $ _declareVariable var value . venv
+  modify $ fccPutVenv vars'
+
+phi :: [String] -> (String, [FCRegister]) -> (String, [FCRegister]) -> FCCompiler ()
+phi = undefined

@@ -43,29 +43,35 @@ data FCBlock = FCSimpleBlock FCSimpleBlock |
                FCComplexBlock [FCBlock] |
                FCCondBlock {
                  -- | 
-                 condition ::FCSimpleBlock,
+                 condition  :: FCBlock,
                  -- | 
-                 onSuccess::FCBlock} |
+                 onSuccess  :: FCBlock,
+                 -- |
+                 postFactum :: FCBlock} |
                FCCondElseBlock {
                  -- | 
-                 condition :: FCSimpleBlock,
+                 condition :: FCBlock,
                  -- | 
                  onSuccess :: FCBlock,
                  -- | 
-                 onFail :: FCBlock} |
+                 onFail :: FCBlock,
+                 -- |
+                 postFactum::FCBlock} |
                FCWhileBlock {
                  -- | 
-                 condition :: FCSimpleBlock,
+                 condition :: FCBlock,
                  -- | 
-                 onSuccess :: FCBlock}
+                 onSuccess :: FCBlock,
+                 -- |
+                 postFactum :: FCBlock
+                 }
   
 
 type FCFun = (String, [FCBlock])
 
-  
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
-data BlockType = Normal | Cond | While | Check | Success | Failure | Post
+data BlockType = Normal | Cond | While | Check | Success | Failure | Post | BTPlacceHolder
 
 -- class (MonadError SemanticError a) => ExpToFCStateMonad a where
 --   lookupStringName     :: String -> a String

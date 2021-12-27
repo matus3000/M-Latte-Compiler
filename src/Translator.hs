@@ -13,7 +13,8 @@ module Translator(programToInternal,
                   Convertable(..),
                   IRelOp(..),
                   IAddOp(..),
-                  IMulOp(..)) where
+                  IMulOp(..),
+                  MetaData(..)) where
 
 
 import IDefinition
@@ -82,13 +83,11 @@ data IStmt =  IBStmt IBlock |
   IDecr String |
   IRet IExpr |
   IVRet |
-  ICond IExpr IStmt MetaData |
-  ICondElse IExpr IStmt IStmt MetaData |
-  IWhile IExpr IStmt |
+  ICond IExpr IBlock MetaData |
+  ICondElse IExpr IBlock IBlock MetaData |
+  IWhile IExpr IBlock MetaData|
   ISExp IExpr |
-  IStmtEmpty |
-  ICond2 IExpr IStmt MetaData |
-  IWhile2 IExpr IStmt MetaData
+  IStmtEmpty 
 
 newtype IBlock = IBlock [IStmt]
 
@@ -459,7 +458,7 @@ stmtsToInternal ((Cond pos expr stmt md): rest) = do
       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
       mapM_ endProtection md
       (irest, restBool) <- stmtsToInternal rest
-      let icond = ICond iexpr (IBStmt iblock) (MD md)
+      let icond = ICond iexpr iblock (MD md)
       return (icond:irest, restBool)
 
 stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
@@ -477,7 +476,7 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
         mapM_ protectVar md
         (iblock2, returnBoolean2) <- blockToInternal $ VirtualBlock [stmt2]
         mapM_ endProtection md
-        let icond = ICondElse iexpr (IBStmt iblock1) (IBStmt iblock2) (MD md)
+        let icond = ICondElse iexpr iblock1 iblock2 (MD md)
         if returnBoolean1 && returnBoolean2
           then return ([icond], True)
           else BiFunctor.first (icond:) <$> stmtsToInternal rest
@@ -490,7 +489,7 @@ stmtsToInternal ((While pos expr stmt md):rest) = do
       mapM_ protectVar md
       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
       mapM_ endProtection md
-      BiFunctor.first (IWhile iexpr (IBStmt iblock):) <$> stmtsToInternal rest
+      BiFunctor.first (IWhile iexpr iblock (MD md):) <$> stmtsToInternal rest
 stmtsToInternal ((SExp _ expr):rest) =
   do
     (_, iexpr) <- exprToInternal expr

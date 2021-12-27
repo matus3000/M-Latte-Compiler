@@ -1,5 +1,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Translator(programToInternal,
                   CompilerExcept,
@@ -34,6 +36,8 @@ import qualified Data.Bifunctor
 import Data.Bifunctor (Bifunctor(first))
 import qualified Control.Arrow as BiFunctor
 import qualified Control.Arrow as Data.BiFunctor
+import InteractiveEval (Term(val))
+import GhcPlugins (SourceModified)
 
 data VariableEnvironment = VEnv (DS.Set String) (DM.Map String [IType])
 
@@ -69,7 +73,7 @@ vEnvPop str vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str ma
 data IType = StaticInt Integer | DynamicInt | StaticBool Bool | DynamicBool |
               StaticString String | DynamicString
 
-data MetaData = MD
+data MetaData = MD {modVars :: DS.Set String}
 
 data IStmt =  IBStmt IBlock |
   IDecl [IItem] |
@@ -78,13 +82,12 @@ data IStmt =  IBStmt IBlock |
   IDecr String |
   IRet IExpr |
   IVRet |
-  ICond IExpr IStmt |
-  ICondElse IExpr IStmt IStmt |
+  ICond IExpr IStmt MetaData |
+  ICondElse IExpr IStmt IStmt MetaData |
   IWhile IExpr IStmt |
   ISExp IExpr |
   IStmtEmpty |
   ICond2 IExpr IStmt MetaData |
-  ICondElse2 IExpr IStmt MetaData |
   IWhile2 IExpr IStmt MetaData
 
 newtype IBlock = IBlock [IStmt]
@@ -363,7 +366,14 @@ itemsToInternals ltype (item:rest) =
     tail <- itemsToInternals ltype rest
     return $ head:tail
 
-
+protectVar :: String -> Compiler FunTranslationEnvironment ()
+protectVar var = do
+  (context, vEnv) <- get
+  put (context, vEnvPush var (undefined `fromMaybe` vEnvLookup var vEnv) vEnv)
+endProtection :: String -> Compiler FunTranslationEnvironment ()
+endProtection var = do
+  (context, vEnv) <- get
+  put (context, vEnvPop var vEnv)
 -- stmtToInternal (BStmt _ block) = do
 --   (iBlock, returned) <- (\(retType, VEnv set map) -> (retType,VEnv DS.empty map)) `local` blockToInternal block
 --   return (IBStmt iBlock, returned)
@@ -443,37 +453,44 @@ stmtsToInternal ((Cond pos expr stmt md): rest) = do
   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
   case itype of
     (StaticBool False) -> stmtsToInternal rest
-    (StaticBool True) -> stmtsToInternal (stmt:rest)
+    (StaticBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt]):rest)
     _ -> do
-      (istmt, returnBoolean) <- stmtsToInternal [stmt]
+      mapM_ protectVar md
+      (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
+      mapM_ endProtection md
       (irest, restBool) <- stmtsToInternal rest
-      return (head istmt:irest, restBool)
+      let icond = ICond iexpr (IBStmt iblock) (MD md)
+      return (icond:irest, restBool)
 
 stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
   do
     (itype, iexpr) <- exprToInternal expr
     unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
     case itype of
-      (StaticBool False) -> stmtsToInternal (stmt2:rest)
-      (StaticBool True) -> stmtsToInternal (stmt1:rest)
+      (StaticBool False) -> stmtsToInternal (BStmt pos (Block pos [stmt2]):rest)
+      (StaticBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt1]):rest)
       _ -> do
-        (istmt1, returnBoolean1) <- stmtsToInternal [stmt1]
-        (istmt2, returnBoolean2) <- stmtsToInternal [stmt2]
+        mapM_ protectVar md
+        (iblock1, returnBoolean1) <- blockToInternal $ VirtualBlock [stmt1]
+        mapM_ endProtection md
+
+        mapM_ protectVar md
+        (iblock2, returnBoolean2) <- blockToInternal $ VirtualBlock [stmt2]
+        mapM_ endProtection md
+        let icond = ICondElse iexpr (IBStmt iblock1) (IBStmt iblock2) (MD md)
         if returnBoolean1 && returnBoolean2
-          then return ([ICondElse iexpr (head istmt1) (head istmt2)], True)
-          else BiFunctor.first (ICondElse iexpr (head istmt1) (head istmt2):) <$> stmtsToInternal rest
+          then return ([icond], True)
+          else BiFunctor.first (icond:) <$> stmtsToInternal rest
 stmtsToInternal ((While pos expr stmt md):rest) = do
   (itype, iexpr) <- exprToInternal expr
   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
   case itype of
     (StaticBool False) -> stmtsToInternal rest
-    -- (StaticBool True) ->
-    --   do
-    --     (istmts, returnBoolean) <- stmtsToInternal [stmt]
-    --     return ([IWhile iexpr (head istmts)], returnBoolean)
     _ -> do
-      (istmts, returnBoolean) <- stmtsToInternal [stmt]
-      BiFunctor.first (IWhile iexpr (head istmts):) <$> stmtsToInternal rest
+      mapM_ protectVar md
+      (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
+      mapM_ endProtection md
+      BiFunctor.first (IWhile iexpr (IBStmt iblock):) <$> stmtsToInternal rest
 stmtsToInternal ((SExp _ expr):rest) =
   do
     (_, iexpr) <- exprToInternal expr
@@ -481,8 +498,11 @@ stmtsToInternal ((SExp _ expr):rest) =
 stmtsToInternal ((Empty pos):rest) = stmtsToInternal rest
 
 blockToInternal :: Block -> Compiler FunTranslationEnvironment (IBlock, Bool)
-blockToInternal block@(Block x stmts) =
+blockToInternal block =
   let
+    stmts = case block of
+      Block pos stmts -> stmts
+      VirtualBlock stmts -> stmts
     startBlock :: FunTranslationEnvironment -> FunTranslationEnvironment
     endBlock :: FunTranslationEnvironment -> FunTranslationEnvironment
     startBlock = (\(context, VEnv set map) -> (context, VEnv DS.empty map))
@@ -493,8 +513,11 @@ blockToInternal block@(Block x stmts) =
       modify startBlock
       result <- stmtsToInternal stmts
       modify endBlock
-      return $ Data.BiFunctor.first IBlock result
-
+      return $ Data.BiFunctor.first
+        (\case 
+            [IBStmt iblock] -> iblock
+            list -> IBlock list)
+        result
 
 topDefToInternal :: TopDef -> FunctionEnvironment -> CompilerExcept IFun
 topDefToInternal fDef fEnv = let

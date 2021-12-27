@@ -83,7 +83,8 @@ type TopDef = EnrichedTopDef' BNFC'Position
 data EnrichedTopDef' a = FnDef a (Type' a) Ident [Arg' a] (EnrichedBlock' a)
 
 type Block = EnrichedBlock' BNFC'Position
-data EnrichedBlock' a = Block a [EnrichedStmt' a]
+data EnrichedBlock' a = Block a [EnrichedStmt' a] |
+                        VirtualBlock [EnrichedStmt' a]
 
 type Stmt = EnrichedStmt' BNFC'Position
 data EnrichedStmt' a

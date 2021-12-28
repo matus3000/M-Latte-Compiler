@@ -7,7 +7,7 @@
 module LLVMCompiler (FCBinaryOperator(..),
                      FCRegister(..),
                      FCRValue(..),
-                     FCInstr(..),) where
+                     FCInstr(..)) where
 import Prelude
 
 import Data.Maybe (fromMaybe)
@@ -25,6 +25,7 @@ import FCCompilerState (VariableEnvironment(..),
                         LLRegisterState(..),
                         ConstantsEnvironment(..),
                         BlockBuilder(..))
+import FCCompilerTypes (FCRValue(FCEmptyExpr))
 
 data VarEnv = VarEnv { varmap :: DM.Map String [FCRegister],
                        modifiedVariables :: [DS.Set String],
@@ -38,7 +39,6 @@ data RegSt = RegSt { regMap :: DM.Map FCRegister FCRValue ,
 data CompileTimeConstants = CTC {constMap :: DM.Map String String,
                                  nextEtId :: Int}
 
-data CurrentSubblock = ConditionB | SuccessB | FailureB
 data BlockState = BlockState { blockName::String,
                                nextBlockId::Int,
                                openedSimpleBlocks :: Int,
@@ -58,8 +58,10 @@ data BlockState = BlockState { blockName::String,
                                    success :: Maybe FCBlock,
                                    post :: Maybe FCBlock,
                                    current :: BlockType
-                                  }
-
+                                  } |
+                  FunBlockState { blockName :: String,
+                                  body :: FCBlock
+                                }
 
 data FCBOType = Arithmetic | Boolean | Relation | Bitwise
 
@@ -82,57 +84,58 @@ binOpGetType x = case x of
 
 
 translateExpr :: Tr.IExpr -> Bool -> FCCompiler FCRegister
-translateExpr x save =
-  let
-    translateExprAddMull x save =
-      let
-        u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
-        u@(op, ie1, ie2) = case x of
-          Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
-          Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
-          _ -> undefined
-      in
-        do
-          r1 <- translateExpr ie2 True
-          r2 <- translateExpr ie1 True
-          prependFCRValue RNormal $ FCBinOp op r1 r2
-  in
-    case x of
-      Tr.ILitInt n -> return $ (LitInt . fromInteger) n
-      Tr.ILitBool b -> return $ LitBool b
-      Tr.IString s -> do
-        constEt <- getConstStringEt s
-        prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
-      Tr.IVar s -> getVar s
-      addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
-      mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
-      Tr.INeg ie -> do
-        reg <- translateExpr ie True
-        prependFCRValue RNormal $ FCUnOp Neg reg
-      Tr.INot ie -> do
-        reg <- translateExpr ie True
-        prependFCRValue RNormal $ FCUnOp BoolNeg reg
-      Tr.IAnd ie ie' -> do
-        r2 <- translateExpr ie' True
-        r1 <- translateExpr ie True
-        prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
-      Tr.IOr ie ie' -> do
-        r2 <- translateExpr ie' True
-        r1 <- translateExpr ie True
-        prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
-      Tr.IApp fun ies -> let
-        r ::  Bool -> Bool -> FCCompiler FCRegister
-        r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
-          do
-            args <- mapM (`translateExpr` True) (reverse ies)
-            prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
-              FunCall fun args
-        in
-        isFunStatic fun >>= r True
-      Tr.IRel iro ie ie' -> do
-        r2 <- translateExpr ie' True
-        r1 <- translateExpr ie True
-        prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
+-- translateExpr x save =
+--   let
+--     translateExprAddMull x save =
+--       let
+--         u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
+--         u@(op, ie1, ie2) = case x of
+--           Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
+--           Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
+--           _ -> undefined
+--       in
+--         do
+--           r1 <- translateExpr ie2 True
+--           r2 <- translateExpr ie1 True
+--           prependFCRValue RNormal $ FCBinOp op r1 r2
+--   in
+--     case x of
+--       Tr.ILitInt n -> return $ (LitInt . fromInteger) n
+--       Tr.ILitBool b -> return $ LitBool b
+--       Tr.IString s -> do
+--         constEt <- getConstStringEt s
+--         prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
+--       Tr.IVar s -> getVar s
+--       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
+--       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
+--       Tr.INeg ie -> do
+--         reg <- translateExpr ie True
+--         prependFCRValue RNormal $ FCUnOp Neg reg
+--       Tr.INot ie -> do
+--         reg <- translateExpr ie True
+--         prependFCRValue RNormal $ FCUnOp BoolNeg reg
+--       Tr.IAnd ie ie' -> do
+--         r2 <- translateExpr ie' True
+--         r1 <- translateExpr ie True
+--         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+--       Tr.IOr ie ie' -> do
+--         r2 <- translateExpr ie' True
+--         r1 <- translateExpr ie True
+--         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+--       Tr.IApp fun ies -> let
+--         r ::  Bool -> Bool -> FCCompiler FCRegister
+--         r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
+--           do
+--             args <- mapM (`translateExpr` True) (reverse ies)
+--             prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
+--               FunCall fun args
+--         in
+--         isFunStatic fun >>= r True
+--       Tr.IRel iro ie ie' -> do
+--         r2 <- translateExpr ie' True
+--         r1 <- translateExpr ie True
+--         prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
+translateExpr x save = return VoidReg
 
 translateIItem :: Tr.IItem -> FCCompiler ()
 translateIItem (Tr.IItem s ie) = void $
@@ -141,98 +144,114 @@ translateIItem (Tr.IItem s ie) = void $
     declVar s reg
 
 translateInstr :: Tr.IStmt -> FCCompiler ()
-translateInstr stmt = case stmt of
-  Tr.IBStmt ib -> translateBlock ib
-  Tr.IDecl iis -> void $ do
-    iis <- mapM translateIItem (reverse iis)
-    return  ()
-  Tr.IAss s ie -> do
-    reg <- translateExpr ie True
-    setVar s reg
-  Tr.IIncr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
-  Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
-  Tr.IRet ie -> void $ do
-    r <- translateExpr ie True
-    prependFCRValue RVoid $ Return (Just r)
-  Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
-  Tr.ICond ie iblock (Tr.MD md) -> do
-    let ascmd = DS.toAscList md
-    parname <- getBlockName
-    openBlock Cond
+translateInstr _ = return ()
+-- translateInstr stmt = case stmt of
+--   Tr.IBStmt ib -> translateBlock ib
+--   Tr.IDecl iis -> void $ do
+--     iis <- mapM translateIItem (reverse iis)
+--     return  ()
+--   Tr.IAss s ie -> do
+--     reg <- translateExpr ie True
+--     setVar s reg
+--   Tr.IIncr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
+--   Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
+--   Tr.IRet ie -> void $ do
+--     r <- translateExpr ie True
+--     prependFCRValue RVoid $ Return (Just r)
+--   Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
+  -- Tr.ICond ie iblock (Tr.MD md) -> do
+  --   let ascmd = DS.toAscList md
+  --   parname <- getBlockName
+  --   openBlock Cond
 
 
-    oldVal <- mapM getVar ascmd
-    openBlock Check
-    r <- translateExpr ie True
-    closeBlock
+  --   oldVal <- mapM getVar ascmd
+  --   openBlock Check
+  --   r <- translateExpr ie True
+  --   closeBlock
 
-    openBlock Success
-    sname <- getBlockName
-    translateBlock iblock
-    smd <- mapM getVar ascmd
-    closeBlock
+  --   openBlock Success
+  --   protectVariablesCond ascmd
+  --   sname <- getBlockName
+  --   translateBlock iblock
+  --   smd <- mapM getVar ascmd
+  --   endprotection
+  --   closeBlock
 
-    openBlock Post
-    phi ascmd (parname, oldVal) (sname, smd)
-    closeBlock
+  --   openBlock Post
+  --   phi ascmd (parname, oldVal) (sname, smd)
+  --   closeBlock
 
-    closeBlock
-  Tr.ICondElse ie ib ib' (Tr.MD md) -> do
-    let ascmd = DS.toAscList md
-    openBlock Cond
+  --   closeBlock
+  -- Tr.ICondElse ie ib ib' (Tr.MD md) -> do
+  --   let ascmd = DS.toAscList md
+  --   openBlock Cond
 
-    openBlock Check
-    r <- translateExpr ie True
-    closeBlock
+  --   openBlock Check
+  --   r <- translateExpr ie True
+  --   closeBlock
 
-    openBlock Success
-    sname <- getBlockName
-    translateBlock ib
-    smd <- mapM getVar ascmd
-    closeBlock
+  --   openBlock Success
+  --   protectVariablesCond ascmd
+  --   sname <- getBlockName
+  --   translateBlock ib
+  --   smd <- mapM getVar ascmd
+  --   endprotection
+  --   closeBlock
 
-    openBlock Failure
-    fname <- getBlockName
-    translateBlock ib'
-    fmd <- mapM getVar ascmd
-    closeBlock
+  --   openBlock Failure
+  --   protectVariablesCond ascmd
+  --   fname <- getBlockName
+  --   translateBlock ib'
+  --   fmd <- mapM getVar ascmd
+  --   endprotection
+  --   closeBlock
 
-    openBlock Post
-    phi ascmd (sname, smd) (fname, fmd)
-    closeBlock
+  --   openBlock Post
+  --   phi ascmd (sname, smd) (fname, fmd)
+  --   closeBlock
 
-    closeBlock
-  Tr.IWhile ie ib (Tr.MD md) -> do
-    let ascmd = DS.toAscList md
-    parName <- getBlockName
-    oldValues <- mapM getVar ascmd
+  --   closeBlock
+  -- Tr.IWhile ie ib (Tr.MD md) -> do
+  --   let ascmd = DS.toAscList md
+  --   parName <- getBlockName
+  --   oldValues <- mapM getVar ascmd
 
-    openBlock While
+  --   openBlock While
 
-    openBlock Check
-    r <- translateExpr ie True
-    closeBlock
+  --   openBlock Check
+  --   r <- translateExpr ie True
+  --   closeBlock
 
-    openBlock Success
-    sname <- getBlockName
-    translateBlock ib
-    smd <- mapM getVar ascmd
-    closeBlock
+  --   openBlock Success
+  --   protectVariablesWhile ascmd
+  --   sname <- getBlockName
+  --   translateBlock ib
+  --   smd <- mapM getVar ascmd
+  --   endprotection
+  --   closeBlock
 
-    openBlock Post
-    phi ascmd (parName, oldValues) (sname, smd)
-    closeBlock
+  --   openBlock Post
+  --   phi ascmd (parName, oldValues) (sname, smd)
+  --   closeBlock
 
-    closeBlock
+  --   closeBlock
 
-  Tr.ISExp ie -> void $ translateExpr ie False
-  Tr.IStmtEmpty -> return ()
+  -- Tr.ISExp ie -> void $ translateExpr ie False
+  -- Tr.IStmtEmpty -> return ()
 
 translateBlock :: Tr.IBlock -> FCCompiler ()
 translateBlock (Tr.IBlock stmts) = do
-  undefined
-  -- addBlock (reverse stmts) (mapM_ translateInstr)
+  openBlock Normal
+  mapM_ translateInstr stmts
+  closeBlock
 
+translateFun :: Tr.IFun -> FCCompiler FCFun
+translateFun (Tr.IFun s lt lts ib) = do
+  openFunBlock s
+  FCFun (convert lt) s (map convert lts) <$> closeFunBlock
+translateProg :: [Tr.IFun] -> FCCompiler [FCFun]
+translateProg = mapM translateFun
 -- compileBlock :: Tr.IBlock -> CompilerExcept [FCBlock]
 -- compileBlock = undefined
 -- compileFun :: Tr.IFun -> CompilerExcept ()
@@ -307,30 +326,30 @@ instance VariableEnvironment VarEnv String FCRegister where
 
 instance LLRegisterState RegSt where
   _lookupRegister reg (RegSt regMap rvalueMap nextNormalIbd) = DM.lookup reg regMap
-  _normalizeFCRValue fcrValue (RegSt regMap rvalueMap nextNormalIbd) =
-    case fcrValue of
-      original@(FCBinOp fbo fr fr') -> let norg = original in case fbo of
-        Add -> undefined
-        Sub -> original
-        Div -> undefined
-        Mul -> original
-        Mod -> original
-        LShift -> original
-        RShif -> original
-        ByteAnd -> original
-        ByteOr -> original
-        ByteXor -> original
-        BoolAnd -> original
-        BoolOr -> original
-        BoolXor -> original
-        Test -> undefined
-        Le -> original
-        Equ -> undefined
-        Neq -> undefined
-        Lth -> original
-        Gth -> original
-        Ge -> original
-      _ -> fcrValue
+  _normalizeFCRValue fcrValue (RegSt regMap rvalueMap nextNormalIbd) = undefined
+    -- case fcrValue of
+    --   original@(FCBinOp fbo fr fr') -> let norg = original in case fbo of
+    --     Add -> undefined
+    --     Sub -> original
+    --     Div -> undefined
+    --     Mul -> original
+    --     Mod -> original
+    --     LShift -> original
+    --     RShif -> original
+    --     ByteAnd -> original
+    --     ByteOr -> original
+    --     ByteXor -> original
+    --     BoolAnd -> original
+    --     BoolOr -> original
+    --     BoolXor -> original
+    --     Test -> undefined
+    --     Le -> original
+    --     Equ -> undefined
+    --     Neq -> undefined
+    --     Lth -> original
+    --     Gth -> original
+    --     Ge -> original
+    --   _ -> fcrValue
   _mapFCRValue fcrValue regstate@(RegSt regMap rvalueMap nextNormalId) = case fcrValue' `DM.lookup` rvalueMap of
     Nothing -> let
       fr = Reg $ "%R" ++ show nextNormalId
@@ -347,7 +366,7 @@ instance ConstantsEnvironment CompileTimeConstants String String where
       Nothing -> (CTC (DM.insert str ("C" ++ show next) cmap ) (next + 1), "C" ++ show next)
 
 instance BlockBuilder BlockState FCInstr FCBlock where
-  _build (BlockState bn nbi 0 sl bl) = FCComplexBlock (FCSimpleBlock ("PlaceHolder", sl) : bl)
+  _build (BlockState bn nbi 0 sl bl) = FCComplexBlock bn (FCSimpleBlock "PlaceHolder" sl : bl)
   _build BlockState {} = undefined
   _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) Nothing (Just postBlock) _) =
     FCCondBlock conBlock successBlock postBlock
@@ -398,7 +417,15 @@ getConstStringEt s = do
   modify (fccPutConstants consEnb)
   return et
 
-openBlock :: BlockType-> FCCompiler ()
+openFunBlock :: String -> FCCompiler ()
+openFunBlock fname =
+  do
+    list <- gets ((newSimpleBlock (fname ++ "b") 0 :) . blocks)
+    modify (fccPutBlock list)
+closeFunBlock :: FCCompiler FCBlock
+closeFunBlock = undefined
+
+openBlock :: BlockType -> FCCompiler ()
 openBlock bt = do
   fcc <- get
   let ve' = _openClosure $ venv fcc
@@ -407,8 +434,8 @@ openBlock bt = do
         (BlockState bN nBI oSB sL bL) ->
           case bt of
             Normal -> BlockState bN nBI (oSB + 1) sL bL:rest
-            Cond -> newCondBlockSt (bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock ("", sL):bL):rest)
-            While -> newWhileBlockSt(bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock ("", sL):bL):rest)
+            Cond -> newCondBlockSt (bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock "" sL:bL):rest)
+            While -> newWhileBlockSt(bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock "" sL:bL):rest)
             _ -> undefined
         (CondBlockState bn osb cb cr s f p c) ->
           case bt of
@@ -468,18 +495,20 @@ closeBlock = do
     f (BlockState bn nBI r sL bL : rest) = BlockState bn nBI (r - 1) sL bL : rest
     f _ = undefined
 
--- protectVariables :: [String] -> FCCompiler ()
--- protectVariables vars = do
---   ve <- venv <$> get
---   let ve' = foldl (\ve var ->
---                    case _getVariable var ve of
---                      Just val -> _declareVariable var val ve
---                      Nothing -> ve)
---           (_openClosure ve) vars
---   modify (fccPutVenv ve')
--- endprotection :: FCCompiler ()
--- endprotection = do
---   modify (\fcc -> fccPutVenv (_closeClosure $ venv fcc) fcc)
+protectVariablesCond :: [String] -> FCCompiler ()
+protectVariablesCond vars = do
+  ve <- venv <$> get
+  let ve' = foldl (\ve var ->
+                   case _getVariable var ve of
+                     Just val -> _declareVariable var val ve
+                     Nothing -> ve)
+          (_openClosure ve) vars
+  modify (fccPutVenv ve')
+protectVariablesWhile :: [String] -> FCCompiler ()
+protectVariablesWhile = undefined
+endprotection :: FCCompiler ()
+endprotection = do
+  modify (\fcc -> fccPutVenv (_closeClosure $ venv fcc) fcc)
 
 getBlockName :: FCCompiler String
 getBlockName =

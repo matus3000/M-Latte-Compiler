@@ -62,7 +62,10 @@ runCompiler p s =
           putStrLnStderr "ERROR"
           putStrLnStderr $ errorToString err
           exitWith (ExitFailure argumentError)
-        Right _ -> exitSuccess
+        Right _ ->
+          do
+            putStrLnStderr "OK"
+            exitSuccess
   where
     ts = myLexer s
 

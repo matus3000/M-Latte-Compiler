@@ -21,7 +21,9 @@ function compile() {
     path_without_ext="${path%.lat}"
     file_latte="${path_without_ext}.ll"
     "$EXE" "$1" 1>> "$file_latte"
-    if (( "$?" == 0 )) ; then
+    ret=$?
+    rm "$file_latte" 		# Usunąć, gdy już zajmiemy się generacją kodu.
+    if (( ret == 0 )) ; then
 	exit 0 
     else
 	exit 1

@@ -35,11 +35,11 @@ instance Show SemanticErrorType where
   showsPrec _ err = showString
     (case err of
       WrongReturnType pos l1 l2 -> msg pos ++ "Wrong return type - Expected: " ++ show l1 ++ ", got: " ++ show l2
-      RedefinitionOfVariable pos _ x -> msg pos ++ "Redeclaration of variable: " ++ show x
-      RedefinitionOfFunction pos _ x -> msg pos ++ "Redeclaration of function: " ++ show x
+      RedefinitionOfVariable pos _ x -> msg pos ++ "Redeclaration of variable: " ++ x
+      RedefinitionOfFunction pos _ x -> msg pos ++ "Redeclaration of function: " ++ x
       NoReturnValue lt -> "Wrong return type - Expected: " ++ show lt ++ ", got: " ++ show LVoid
-      UndefinedVar pos x -> msg pos ++ "Undefined variable: " ++ x
-      UndefinedFun pos x -> msg pos ++ "Undefined function: " ++ x
+      UndefinedVar pos x -> msg pos ++ "Undefined variable: " ++  x
+      UndefinedFun pos x -> msg pos ++ "Undefined function: " ++  x
       WrongArgumentCount pos -> msg pos ++ "Wrong number of arguments to function call"
       NoMain -> "No main function"
       DivisionByZero pos -> msg pos ++ "Division by zero"

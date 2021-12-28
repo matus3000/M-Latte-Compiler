@@ -143,7 +143,7 @@ stmtToEnrichedStmt stmt md rd = case stmt of
         ([], DS.empty , rd)
         list
       (stmts', modified, _) = f stmts
-      newBlock = Block b stmts'
+      newBlock = Block b (reverse stmts')
   Lt.VRet a -> (VRet a, md, rd)
   Lt.Ret a expr -> (Ret a expr, md, rd)
   Lt.Cond a expr stmt -> (Cond a expr stmt' modified, modified, DS.empty)

@@ -3,19 +3,21 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE LambdaCase #-}
 
-module Translator(programToInternal,
-                  CompilerExcept,
-                  IFun(..),
-                  IBlock(..),
-                  IStmt(..),
-                  IExpr(..),
-                  IItem(..),
-                  Convertable(..),
-                  IRelOp(..),
-                  IAddOp(..),
-                  IMulOp(..),
-                  MetaData(..)) where
-
+module Translator(
+  programToInternal,
+    CompilerExcept,
+    IFun(..),
+    IBlock(..),
+    IStmt(..),
+    IExpr(..),
+    IItem(..),
+    Convertable(..),
+    IRelOp(..),
+    IAddOp(..),
+    IMulOp(..),
+    MetaData(..),
+    stmtsToInternal
+  ) where
 
 import IDefinition
 
@@ -23,6 +25,7 @@ import IDefinition
 import CompilationError
 
 import Prelude
+import Data.Foldable (Foldable(toList))
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
@@ -37,42 +40,42 @@ import qualified Data.Bifunctor
 import Data.Bifunctor (Bifunctor(first))
 import qualified Control.Arrow as BiFunctor
 import qualified Control.Arrow as Data.BiFunctor
-import InteractiveEval (Term(val))
-import GhcPlugins (SourceModified)
 
-data VariableEnvironment = VEnv (DS.Set String) (DM.Map String [IType])
+import VariableEnvironment(CVariableEnvironment(..), VarEnv(..), newVarEnv)
 
-vEnvLookup :: String -> VariableEnvironment -> Maybe IType
-vEnvLookup str (VEnv _ map) =
-  case DM.lookup str map
-  of
-    Nothing -> Nothing
-    Just [] -> Nothing
-    Just (x:xs) -> Just x
-vEnvUpdate ::  String -> IType -> VariableEnvironment ->  VariableEnvironment
-vEnvUpdate str itype vEnv@(VEnv set map) =
-  case DM.lookup str map
-  of
-    Just (x:xs) -> VEnv set $ DM.insert str (itype:xs) map
-    _ -> vEnv
-vEnvPush :: String -> IType -> VariableEnvironment ->  VariableEnvironment
-vEnvPush str itype vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str map
-  in
-  if DS.member str set
-  then vEnv
-  else VEnv (DS.insert str set) (DM.insert str (itype:oldValue) map)
-vEnvPop :: String -> VariableEnvironment -> VariableEnvironment
-vEnvPop str vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str map
-  in
-  if DS.member str set
-  then VEnv (DS.delete str set) $ DM.insert str (if null oldValue then oldValue else tail oldValue) map
-  else vEnv
+type VariableEnvironment = VarEnv String IType
+
+-- vEnvLookup :: String -> VariableEnvironment -> Maybe IType
+-- vEnvLookup str (VEnv _ map) =
+--   case DM.lookup str map
+--   of
+--     Nothing -> Nothing
+--     Just [] -> Nothing
+--     Just (x:xs) -> Just x
+-- vEnvUpdate ::  String -> IType -> VariableEnvironment ->  VariableEnvironment
+-- vEnvUpdate str itype vEnv@(VEnv set map) =
+--   case DM.lookup str map
+--   of
+--     Just (x:xs) -> VEnv set $ DM.insert str (itype:xs) map
+--     _ -> vEnv
+-- vEnvPush :: String -> IType -> VariableEnvironment ->  VariableEnvironment
+-- vEnvPush str itype vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str map
+--   in
+--   if DS.member str set
+--   then vEnv
+--   else VEnv (DS.insert str set) (DM.insert str (itype:oldValue) map)
+-- vEnvPop :: String -> VariableEnvironment -> VariableEnvironment
+-- vEnvPop str vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str map
+--   in
+--   if DS.member str set
+--   then VEnv (DS.delete str set) $ DM.insert str (if null oldValue then oldValue else tail oldValue) map
+--   else vEnv
 -- vEnvAddBlock :: VariableEnvironment ->  VariableEnvironment
 -- vEnvRemoveBlock :: VariableEnvironment -> VariableEnvironment
 
 
 data IType = StaticInt Integer | DynamicInt | StaticBool Bool | DynamicBool |
-              StaticString String | DynamicString
+              StaticString String | DynamicString | IVoid
 
 data MetaData = MD {modVars :: DS.Set String}
 
@@ -87,7 +90,7 @@ data IStmt =  IBStmt IBlock |
   ICondElse IExpr IBlock IBlock MetaData |
   IWhile IExpr IBlock MetaData|
   ISExp IExpr |
-  IStmtEmpty 
+  IStmtEmpty
 
 newtype IBlock = IBlock [IStmt]
 
@@ -274,7 +277,7 @@ f (ERel pos e1 op e2) = let
       return $ helper op r1 r2
 f (EVar pos (Ident varId)) = do
   (_, vEnv) <- get
-  let var = varId `vEnvLookup` vEnv
+  let var = varId `lookupVar` vEnv
   case var of
     Nothing -> throwErrorInContext (UndefinedVar ((-1, -1) `fromMaybe` pos) varId)
     Just itype -> return
@@ -343,8 +346,8 @@ itemToInternal :: LType -> Item -> Compiler FunTranslationEnvironment IItem
 itemToInternal varType item =
   do
     let id = getIdStr item
-    ftEnv@(context@(ltype, funName, pos), VEnv set map) <- get
-    if id `DS.member` set
+    ftEnv@(context@(ltype, funName, pos), venv) <- get
+    if id `DS.member` head (redeclaredVars venv)
       then throwError $ SemanticError pos (RedefinitionOfVariable (getPosition item) (getPosition item) id)
       else
       do
@@ -353,9 +356,9 @@ itemToInternal varType item =
               Init _ _ ex -> ex
         (itype, iexpr) <- exprToInternal expr
         unless (varType `same` itype) (throwErrorInContext $ TypeConflict (getPosition item) varType (cast itype))
-        modify $ Data.BiFunctor.second (vEnvPush id itype)
+        (c, venv) <- get
+        put (c, declareVar id itype venv)
         return (IItem id iexpr)
-
 
 itemsToInternals :: LType -> [Item] -> Compiler FunTranslationEnvironment [IItem]
 itemsToInternals _ [] = return []
@@ -365,14 +368,6 @@ itemsToInternals ltype (item:rest) =
     tail <- itemsToInternals ltype rest
     return $ head:tail
 
-protectVar :: String -> Compiler FunTranslationEnvironment ()
-protectVar var = do
-  (context, vEnv) <- get
-  put (context, vEnvPush var (undefined `fromMaybe` vEnvLookup var vEnv) vEnv)
-endProtection :: String -> Compiler FunTranslationEnvironment ()
-endProtection var = do
-  (context, vEnv) <- get
-  put (context, vEnvPop var vEnv)
 -- stmtToInternal (BStmt _ block) = do
 --   (iBlock, returned) <- (\(retType, VEnv set map) -> (retType,VEnv DS.empty map)) `local` blockToInternal block
 --   return (IBStmt iBlock, returned)
@@ -386,7 +381,6 @@ stmtsToInternal ((BStmt _ block):rest) = do
     then return ([iStmt], True)
     else stmtsToInternal rest >>= (return . Data.Bifunctor.first (iStmt:))
 stmtsToInternal ((Decl pos dtype items):rest) = do
-  env@(context, vEnv) <- get
   let ltype = convertType dtype
   items <- itemsToInternals ltype items
   (istmts, ret) <- stmtsToInternal rest
@@ -394,7 +388,7 @@ stmtsToInternal ((Decl pos dtype items):rest) = do
 stmtsToInternal (stm@(Ass pos ident expr):rest) = do
   env@(context, vEnv) <- get
   let (Ident id)= ident
-      x =  id `vEnvLookup` vEnv
+      x =  id `lookupVar` vEnv
   case x of
         Nothing -> throwErrorInContext (UndefinedVar (getPosition stm) id)
         Just xType ->
@@ -402,12 +396,12 @@ stmtsToInternal (stm@(Ass pos ident expr):rest) = do
             (assType, assIExpr) <- exprToInternal expr
             unless (xType `same` assType) $ throwErrorInContext
               (TypeConflict (getPosition stm) (cast xType) (cast assType))
-            modify $ Data.Bifunctor.second (vEnvUpdate id assType)
+            modify $ Data.Bifunctor.second (setVar id assType)
             (irest, returnBool) <-  stmtsToInternal rest
             return (IAss id assIExpr:irest, returnBool)
 stmtsToInternal ((Incr pos (Ident varId)):rest) = do
   env@(context, vEnv) <- get
-  let x =  varId `vEnvLookup` vEnv
+  let x =  varId `lookupVar` vEnv
       stmtpos = (-1,-1) `fromMaybe` pos
   case x of
         Nothing -> throwErrorInContext (UndefinedVar stmtpos varId)
@@ -415,14 +409,14 @@ stmtsToInternal ((Incr pos (Ident varId)):rest) = do
           unless (xType `same` LInt) $ throwErrorInContext (TypeConflict stmtpos LInt (cast xType))
           let
             modifyFun = case xType of
-                StaticInt val -> Data.Bifunctor.second (vEnvUpdate varId (StaticInt (val + 1)))
+                StaticInt val -> Data.Bifunctor.second (setVar varId (StaticInt (val + 1)))
                 _ -> id
           modify modifyFun
           (irest, returnBool) <- stmtsToInternal rest
           return (IIncr varId:irest, returnBool)
 stmtsToInternal ((Decr pos (Ident varId)):rest) = do
   env@(context, vEnv) <- get
-  let x =  varId `vEnvLookup` vEnv
+  let x =  varId `lookupVar` vEnv
       stmtpos = (-1,-1) `fromMaybe` pos
   case x of
         Nothing -> throwErrorInContext (UndefinedVar stmtpos varId)
@@ -430,7 +424,7 @@ stmtsToInternal ((Decr pos (Ident varId)):rest) = do
           unless (xType `same` LInt) $ throwErrorInContext (TypeConflict stmtpos LInt (cast xType))
           let
             modifyFun = case xType of
-              StaticInt val -> Data.Bifunctor.second (vEnvUpdate varId (StaticInt (val - 1)))
+              StaticInt val -> Data.Bifunctor.second (setVar varId (StaticInt (val - 1)))
               _ -> id
           modify modifyFun
           (irest, returnBool) <- stmtsToInternal rest
@@ -454,9 +448,9 @@ stmtsToInternal ((Cond pos expr stmt md): rest) = do
     (StaticBool False) -> stmtsToInternal rest
     (StaticBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt]):rest)
     _ -> do
-      mapM_ protectVar md
+      modify $ BiFunctor.second (protectVars_ md)
       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
-      mapM_ endProtection md
+      modify $ BiFunctor.second endProtection
       (irest, restBool) <- stmtsToInternal rest
       let icond = ICond iexpr iblock (MD md)
       return (icond:irest, restBool)
@@ -469,27 +463,46 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
       (StaticBool False) -> stmtsToInternal (BStmt pos (Block pos [stmt2]):rest)
       (StaticBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt1]):rest)
       _ -> do
-        mapM_ protectVar md
-        (iblock1, returnBoolean1) <- blockToInternal $ VirtualBlock [stmt1]
-        mapM_ endProtection md
 
-        mapM_ protectVar md
+        modify $ BiFunctor.second (protectVars_ md)
+        (iblock1, returnBoolean1) <- blockToInternal $ VirtualBlock [stmt1]
+        modify $ BiFunctor.second endProtection
+
+        modify $ BiFunctor.second (protectVars_ md)
         (iblock2, returnBoolean2) <- blockToInternal $ VirtualBlock [stmt2]
-        mapM_ endProtection md
+        modify $ BiFunctor.second endProtection
+
         let icond = ICondElse iexpr iblock1 iblock2 (MD md)
         if returnBoolean1 && returnBoolean2
           then return ([icond], True)
           else BiFunctor.first (icond:) <$> stmtsToInternal rest
+
 stmtsToInternal ((While pos expr stmt md):rest) = do
   (itype, iexpr) <- exprToInternal expr
   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
   case itype of
     (StaticBool False) -> stmtsToInternal rest
     _ -> do
-      mapM_ protectVar md
+      (_, venv)<- get
+      let ascmd = toList md
+      modify $ BiFunctor.second (protectVars ascmd (toDynamic ascmd venv))
       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
-      mapM_ endProtection md
+      modify $ BiFunctor.second endProtection
       BiFunctor.first (IWhile iexpr iblock (MD md):) <$> stmtsToInternal rest
+  where
+    toDynamic :: [String] -> VariableEnvironment -> [IType]
+    toDynamic ss venv = map
+      (\key ->
+          case lookupVar key venv of
+            Just x -> case x of
+              StaticInt n -> DynamicInt
+              DynamicInt -> DynamicInt
+              StaticBool b -> DynamicBool
+              DynamicBool -> DynamicBool
+              StaticString s -> DynamicString
+              DynamicString -> DynamicString
+            Nothing -> IVoid)
+      ss
 stmtsToInternal ((SExp _ expr):rest) =
   do
     (_, iexpr) <- exprToInternal expr
@@ -502,18 +515,13 @@ blockToInternal block =
     stmts = case block of
       Block pos stmts -> stmts
       VirtualBlock stmts -> stmts
-    startBlock :: FunTranslationEnvironment -> FunTranslationEnvironment
-    endBlock :: FunTranslationEnvironment -> FunTranslationEnvironment
-    startBlock = (\(context, VEnv set map) -> (context, VEnv DS.empty map))
-    endBlock (context, vEnv@(VEnv set map)) = (context, foldl (flip vEnvPop) vEnv set)
   in
     do
-      oldState <- get
-      modify startBlock
+      modify (BiFunctor.second openClosure)
       result <- stmtsToInternal stmts
-      modify endBlock
+      modify (BiFunctor.second closeClosure)
       return $ Data.BiFunctor.first
-        (\case 
+        (\case
             [IBStmt iblock] -> iblock
             list -> IBlock list)
         result
@@ -524,9 +532,7 @@ topDefToInternal fDef fEnv = let
   funArgs = [(getIdStr i, getArgLType i) | i <- topDefArgs fDef]
   retType = fst $ (LVoid, []) `fromMaybe` DM.lookup funName fEnv
   block = topDefBlock fDef
-  vEnv :: VariableEnvironment
-  vEnv = VEnv DS.empty DM.empty
-  nvEnv = foldl (\vEnv (id, ltype) -> vEnvPush id (lTypeToIType ltype) vEnv) vEnv funArgs
+  nvEnv = foldl (\vEnv (id, ltype) -> declareVar id (lTypeToIType ltype) vEnv) newVarEnv funArgs
   res = (`evalStateT` ((retType, funName, getPosition fDef), nvEnv)) $ runReaderT (blockToInternal block) fEnv
   in
     do

@@ -93,81 +93,83 @@ binOpGetType x = case x of
   Test -> Boolean
 
 
-translateExpr :: Tr.IExpr -> Bool -> FCCompiler FCRegister
--- translateExpr x save =
---   let
---     translateExprAddMull x save =
---       let
---         u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
---         u@(op, ie1, ie2) = case x of
---           Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
---           Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
---           _ -> undefined
---       in
---         do
---           r1 <- translateExpr ie2 True
---           r2 <- translateExpr ie1 True
---           prependFCRValue RNormal $ FCBinOp op r1 r2
---   in
---     case x of
---       Tr.ILitInt n -> return $ (LitInt . fromInteger) n
---       Tr.ILitBool b -> return $ LitBool b
---       Tr.IString s -> do
---         constEt <- getConstStringEt s
---         prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
---       Tr.IVar s -> getVar s
---       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
---       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
---       Tr.INeg ie -> do
---         reg <- translateExpr ie True
---         prependFCRValue RNormal $ FCUnOp Neg reg
---       Tr.INot ie -> do
---         reg <- translateExpr ie True
---         prependFCRValue RNormal $ FCUnOp BoolNeg reg
---       Tr.IAnd ie ie' -> do
---         r2 <- translateExpr ie' True
---         r1 <- translateExpr ie True
---         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
---       Tr.IOr ie ie' -> do
---         r2 <- translateExpr ie' True
---         r1 <- translateExpr ie True
---         prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
---       Tr.IApp fun ies -> let
---         r ::  Bool -> Bool -> FCCompiler FCRegister
---         r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
---           do
---             args <- mapM (`translateExpr` True) (reverse ies)
---             prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
---               FunCall fun args
---         in
---         isFunStatic fun >>= r True
---       Tr.IRel iro ie ie' -> do
---         r2 <- translateExpr ie' True
---         r1 <- translateExpr ie True
---         prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
-translateExpr x save = return VoidReg
+translateExpr :: Tr.IExpr -> Bool -> FCCompiler (FCType, FCRegister)
+translateExpr x save =
+  let
+    translateExprAddMull x save =
+      let
+        u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
+        u@(op, ie1, ie2) = case x of
+          Tr.IAdd iao ie1 ie2 -> (convert iao, ie1, ie2)
+          Tr.IMul imo ie1 ie2 -> (convert imo, ie1, ie2)
+          _ -> undefined
+      in
+        do
+          (t1, r1) <- translateExpr ie2 True
+          (t2, r2) <- translateExpr ie1 True
+          r <- prependFCRValue RNormal $ FCBinOp t1 op r1 r2
+          return (t1, r)
+  in
+    case x of
+      Tr.ILitInt n -> return  (Int , (LitInt . fromInteger) n)
+      Tr.ILitBool b -> return (Bool, LitBool b)
+      -- Tr.IString s -> do
+      --   constEt <- getConstStringEt s
+      --   prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
+      Tr.IVar s -> getVar s
+      addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
+      mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
+      -- Tr.INeg ie -> do
+      --   reg <- translateExpr ie True
+      --   prependFCRValue RNormal $ FCUnOp Neg reg
+      -- Tr.INot ie -> do
+      --   reg <- translateExpr ie True
+      --   prependFCRValue RNormal $ FCUnOp BoolNeg reg
+      -- Tr.IAnd ie ie' -> do
+      --   r2 <- translateExpr ie' True
+      --   r1 <- translateExpr ie True
+      --   prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+      -- Tr.IOr ie ie' -> do
+      --   r2 <- translateExpr ie' True
+      --   r1 <- translateExpr ie True
+      --   prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
+      -- Tr.IApp fun ies -> let
+      --   r ::  Bool -> Bool -> FCCompiler FCRegister
+      --   r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
+      --     do
+      --       args <- mapM (`translateExpr` True) (reverse ies)
+      --       prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
+      --         FunCall fun args
+      --   in
+      --   isFunStatic fun >>= r True
+      -- Tr.IRel iro ie ie' -> do
+      --   r2 <- translateExpr ie' True
+      --   r1 <- translateExpr ie True
+      --   prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
+      _ -> error "Unimplemented TR.Expr for TranslateExpr"
 
 translateIItem :: Tr.IItem -> FCCompiler ()
 translateIItem (Tr.IItem s ie) = void $
   do
-    reg <- translateExpr ie True
+    (_,reg) <- translateExpr ie True
     declVar s reg
 
 translateInstr :: Tr.IStmt -> FCCompiler ()
 translateInstr _ = return ()
--- translateInstr stmt = case stmt of
---   Tr.IBStmt ib -> translateBlock ib
---   Tr.IDecl iis -> void $ do
---     iis <- mapM translateIItem (reverse iis)
---     return  ()
+translateInstr stmt = case stmt of
+  Tr.IBStmt ib -> translateBlock ib
+  Tr.IDecl iis -> void $ do
+    iis <- mapM translateIItem (reverse iis)
+    return  ()
 --   Tr.IAss s ie -> do
 --     reg <- translateExpr ie True
 --     setVar s reg
 --   Tr.IIncr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
 --   Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
---   Tr.IRet ie -> void $ do
---     r <- translateExpr ie True
---     prependFCRValue RVoid $ Return (Just r)
+  Tr.IRet ie -> void $ do
+    (ft, r) <- translateExpr ie True
+    r' <- prependFCRValue RVoid (Return ft (Just r))
+    return (ft, r')
 --   Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
   -- Tr.ICond ie iblock (Tr.MD md) -> do
   --   let ascmd = DS.toAscList md
@@ -259,9 +261,7 @@ translateBlock (Tr.IBlock stmts) = do
 translateFun :: Tr.IFun -> FCCompiler FCFun
 translateFun (Tr.IFun s lt lts ib) = do
   funargs <- openFunBlock s lt lts
-  -- translateBlock ib
-  openBlock Normal
-  closeBlock
+  translateBlock ib
   funbody <- closeFunBlock
   return (FCFun {name = s, retType = convert lt, args=funargs, FCT.body = funbody})
 
@@ -317,6 +317,8 @@ instance Convertable Tr.IRelOp FCBinaryOperator where
 
 -- instance ExpToFCStateMonad FCC where
 --   lookupStringName x = fccEmplaceConstString x
+
+-- lookupRegister :: FCRegister -> FCCompiler FCType
 
 instance LLRegisterState RegSt where
   _lookupRegister reg (RegSt regMap rvalueMap nextNormalIbd) = DM.lookup reg regMap
@@ -557,10 +559,15 @@ getBlockName =
       (WhileBlockState name _ _ _ _ _):rest -> name
       _ -> error "GetBlockName: undefined case"
 
-getVar :: String -> FCCompiler FCRegister
+getVar :: String -> FCCompiler (FCType, FCRegister)
 getVar var = do
-  value <- gets (VE.lookupVar var . venv)
-  return $ undefined `fromMaybe` value
+  mvalue <- gets (VE.lookupVar var . venv)
+  let value = error "GetVar: Could not find variable" `fromMaybe` mvalue
+  rtype <- gets (_lookupRegister value . regenv)
+  return $ case rtype of
+             Just rtype -> (fCRValueType rtype, value)
+             _ -> error "GetVar: Could not find type of Register"
+
 setVar :: String -> FCRegister -> FCCompiler ()
 setVar var value = do
   vars' <- gets $ VE.setVar var value . venv

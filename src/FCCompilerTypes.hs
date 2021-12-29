@@ -1,4 +1,6 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 module FCCompilerTypes (
   FCUnaryOperator(..),
   FCBinaryOperator(..),
@@ -12,6 +14,7 @@ module FCCompilerTypes (
   BlockType(..),
   FCProg(..),
   ShowWithIndent(..),
+  fCRValueType,
   runIndentMonad)
 where
 
@@ -23,6 +26,8 @@ import Control.Monad.Reader
 import qualified Translator as Tr
 import qualified Data.Map as DM
 import qualified IDefinition as IDef
+import qualified Data.Foldable
+
 
 
 data FCUnaryOperator = Neg | BoolNeg
@@ -120,6 +125,19 @@ instance Convertable Tr.IMulOp FCBinaryOperator where
     Tr.IDiv -> Div
     Tr.IMod -> Mod
 
+fCRValueType :: FCRValue -> FCType
+fCRValueType x = case x of
+  FunCall ft s frs -> ft
+  FCBinOp ft fbo fr fr' -> ft
+  FCUnOp ft fuo fr -> ft
+  ConstValue ft fr -> ft
+  GetPointer ft fr fr' -> ft
+  Return ft m_fr -> ft
+  FCEmptyExpr -> Void
+  FCFunArg ft s n -> ft
+
+--INDENTATION MONAD --
+
 type IndentationType = String
 type Indentation = (Int, IndentationType,String)
 type IndentMonad = Reader Indentation
@@ -146,14 +164,33 @@ indent s = do
   (_, _, c') <- ask
   return $ c' ++ s
 
+instance Show FCBinaryOperator where
+  show x =
+    case x of
+      Add -> "add"
+      Sub -> "sub"
+      _ -> error "show FCBinOP undefined"
+
+
+instance Show FCRValue where
+  showsPrec _ (FCBinOp ftype fbop r1 r2) s =
+    show fbop ++ " " ++ show ftype ++ " " ++ show r1 ++ ", "
+    ++ show r2 ++ s
+  showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
+
 class ShowWithIndent a where
   showIndent :: a -> IndentMonad String
   showsIndent :: a -> String -> IndentMonad String
   showIndent = flip showsIndent ""
 
+instance ShowWithIndent FCInstr where
+  showsIndent (reg, instr) rest = indent (show reg ++ " = " ++ show instr ++ show rest)
+  showIndent x = showsIndent x ""
+  
 instance ShowWithIndent FCBlock where
-  showIndent _ = indent "Unimplemented\n"
-  showsIndent _ rest = indent ("Unimplemented\n" ++ rest)
+  showsIndent (FCSimpleBlock _ linstr) rest =
+    Data.Foldable.foldrM (\instr s -> showsIndent instr ("\n" ++ s)) rest linstr
+  showsIndent _ rest = error "Unimplemented instance of showWithIndent for FCBlock"
 
 instance ShowWithIndent FCFun where
   showsIndent (FCFun name rt args body) s = do

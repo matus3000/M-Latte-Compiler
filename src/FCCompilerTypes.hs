@@ -7,8 +7,12 @@ module FCCompilerTypes (
   FCInstr(..),
   FCBlock(..),
   FCFun(..),
+  FCType(..),
   RegType(..),
-  BlockType(..))
+  BlockType(..),
+  FCProg(..),
+  ShowWithIndent(..),
+  runIndentMonad)
 where
 
 import Control.Monad.Except (Except, MonadError)
@@ -40,7 +44,8 @@ data FCRValue = FunCall FCType String [FCRegister] |
                 ConstValue FCType FCRegister |
                 GetPointer FCType FCRegister FCRegister |
                 Return FCType (Maybe FCRegister) |
-                FCEmptyExpr
+                FCEmptyExpr |
+                FCFunArg FCType String Int
   deriving (Eq, Ord)
 
 type FCInstr = (FCRegister, FCRValue)
@@ -75,11 +80,13 @@ data FCBlock = FCSimpleBlock String FCSimpleBlock |
                  }
 
 data FCFun = FCFun
-  { retType :: FCType,
-    name :: String,
-    argTypes :: [FCType],
+  { name :: String,
+    retType :: FCType,
+    args :: [(FCType, FCRegister)],
     body :: FCBlock
   }
+
+data FCProg = FCProg [FCFun]
 
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
@@ -119,10 +126,9 @@ type IndentMonad = Reader Indentation
 
 instance Show FCType where
   show Int = "i32"
-  show Bool = "i8"
+  show Bool = "i1"
   show String = "i8*"
   show Void = "void"
-  show _ = undefined
 
 runIndentMonad :: IndentMonad a -> Int -> IndentationType -> a
 runIndentMonad a n s =
@@ -143,18 +149,28 @@ indent s = do
 class ShowWithIndent a where
   showIndent :: a -> IndentMonad String
   showsIndent :: a -> String -> IndentMonad String
+  showIndent = flip showsIndent ""
 
 instance ShowWithIndent FCBlock where
   showIndent _ = indent "Unimplemented\n"
   showsIndent _ rest = indent ("Unimplemented\n" ++ rest)
 
 instance ShowWithIndent FCFun where
-  showIndent (FCFun rt name args body) = do
+  showsIndent (FCFun name rt args body) s = do
     (length, ident, current) <- ask
-    sbody <- addIndentation $ showsIndent body "}"
+    sbody <- addIndentation $ showsIndent body ("}" ++ s)
     indent $ "declare " ++ show rt ++ " @" ++ name ++
-      "(" ++ showArgs args ++ "){\n" ++ sbody 
+      "(" ++ showArgs args ++ "){\n" ++ sbody
       where
-        showArgs :: [FCType] -> String
-        showArgs = foldr (\fct s -> show fct ++ (if null s then "" else ", ") ++ s) ""
-  showsIndent (FCFun rt name args body) _ = undefined
+        showArgs :: [(FCType, FCRegister)] -> String
+        showArgs = foldr (\(ftype, freg) s -> show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
+  showIndent = flip showsIndent ""
+
+instance ShowWithIndent FCProg where
+  showsIndent (FCProg list) s =
+    do
+      foldr (\a x -> do
+                str <- x
+                showsIndent a ("\n" ++ str)) (return s) list
+  showIndent = flip showsIndent ""
+  

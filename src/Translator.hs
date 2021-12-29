@@ -117,7 +117,7 @@ data IExpr = IVar String |
   IRel IRelOp IExpr IExpr
   deriving Eq
 
-data IFun = IFun String LType [LType] IBlock
+data IFun = IFun String LType [(String, LType)] IBlock
 type FunctionData = (LType, [LType])
 type FunctionEnvironment = DM.Map String FunctionData
 type FunContext = (LType, String, (Int, Int))
@@ -538,7 +538,7 @@ topDefToInternal fDef fEnv = let
     do
       x <- res
       unless (snd x || retType == LVoid) (throwError $ SemanticError (getPosition fDef) (NoReturnValue retType))
-      return $ IFun funName retType (snd `map` funArgs) (fst x)
+      return $ IFun funName retType funArgs (fst x)
 
 assertMain :: FunctionEnvironment -> CompilerExcept ()
 assertMain fEnv =

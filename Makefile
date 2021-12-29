@@ -9,7 +9,7 @@ vpath %.y src
 vpath %.x src
 vpath %.o build
 
-objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs IDefinition.hs Translator.hs CompilationError.hs VariableEnvironment.hs LLVMCompiler.hs
+objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs IDefinition.hs Translator.hs CompilationError.hs VariableEnvironment.hs LLVMCompiler.hs FCCompilerTypes.hs
 compilers = Main.hs
 
 .PHONY: clean

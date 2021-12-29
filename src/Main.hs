@@ -18,6 +18,8 @@ import System.IO (stderr, hPutStrLn)
 import System.Exit
 
 import qualified IDefinition as IDef
+import LLVMCompiler(compileProg)
+import FCCompilerTypes(ShowWithIndent(..), runIndentMonad)
 
 import qualified Latte.Abs as Lt
     (
@@ -38,10 +40,11 @@ import CompilationError (errorToString)
 type Err = Either String
 type ParseFun a = [Token] -> Err a
 
-compile :: Lt.Program -> CompilerExcept ()
+compile :: Lt.Program -> CompilerExcept String
 compile program =
   do
-    void $ (programToInternal . IDef.preprocessProgram)  program
+    iprogram <- (programToInternal . IDef.preprocessProgram)  program
+    return $ runIndentMonad (showIndent (compileProg iprogram)) 4 " "
 
 argumentError = 1
 grammarError = 2
@@ -62,9 +65,10 @@ runCompiler p s =
           putStrLnStderr "ERROR"
           putStrLnStderr $ errorToString err
           exitWith (ExitFailure argumentError)
-        Right _ ->
+        Right code ->
           do
             putStrLnStderr "OK"
+            putStr code
             exitSuccess
   where
     ts = myLexer s

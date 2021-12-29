@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 -- TO DO:
 -- a) Zamienić mapM getVar foldable na getVars
+-- b) Sprawić, żeby return nie otrzymawało normalnego rejestru, tylko rejestr typu void.
 module LLVMCompiler (FCBinaryOperator(..),
                      FCRegister(..),
                      FCRValue(..),
@@ -26,7 +27,9 @@ import FCCompilerState (VariableEnvironment(..),
                         LLRegisterState(..),
                         ConstantsEnvironment(..),
                         BlockBuilder(..))
-import FCCompilerTypes (FCRValue(FCEmptyExpr), FCType(..))
+import FCCompilerTypes (FCRValue(FCEmptyExpr),
+                        FCType(..),
+                        FCBlock(..))
 import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import qualified IDefinition as IDef
@@ -155,7 +158,6 @@ translateIItem (Tr.IItem s ie) = void $
     declVar s reg
 
 translateInstr :: Tr.IStmt -> FCCompiler ()
-translateInstr _ = return ()
 translateInstr stmt = case stmt of
   Tr.IBStmt ib -> translateBlock ib
   Tr.IDecl iis -> void $ do
@@ -168,9 +170,9 @@ translateInstr stmt = case stmt of
 --   Tr.IDecr s -> translateInstr (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
   Tr.IRet ie -> void $ do
     (ft, r) <- translateExpr ie True
-    r' <- prependFCRValue RVoid (Return ft (Just r))
-    return (ft, r')
---   Tr.IVRet -> void $ prependFCRValue RVoid (Return Nothing)
+    prependFCRValue RVoid (Return ft (Just r))
+
+  Tr.IVRet -> void $ prependFCRValue RVoid (Return Void Nothing)
   -- Tr.ICond ie iblock (Tr.MD md) -> do
   --   let ascmd = DS.toAscList md
   --   parname <- getBlockName
@@ -250,7 +252,8 @@ translateInstr stmt = case stmt of
   --   closeBlock
 
   -- Tr.ISExp ie -> void $ translateExpr ie False
-  -- Tr.IStmtEmpty -> return ()
+  Tr.IStmtEmpty -> return ()
+  _ -> error  "TranslateInstr: WIP"
 
 translateBlock :: Tr.IBlock -> FCCompiler ()
 translateBlock (Tr.IBlock stmts) = do
@@ -355,6 +358,7 @@ instance LLRegisterState RegSt where
       (RegSt regMap' rvalueMap' (1 + nextNormalId), Right fr)
     Just fr -> (regstate, Left fr)
     where fcrValue' = _normalizeFCRValue fcrValue regstate
+  _mapFCRValueRegType _ fcr regst = _mapFCRValue fcr regst
 
 instance ConstantsEnvironment CompileTimeConstants String String where
   _getPointer str ctc@(CTC cmap next) = case DM.lookup str cmap of
@@ -365,9 +369,11 @@ instance BlockBuilder BlockState FCInstr FCBlock where
   _build (FunBlockState fname body) = case body of
     Just x -> x
     Nothing -> error "FunBlockState musi mieć syna"
-  _build _ = error "_build: WIP"
-  -- _build (BlockState bn nbi 0 sl bl) = FCComplexBlock bn (FCSimpleBlock "PlaceHolder" sl : bl)
-  -- _build BlockState {} = undefined
+  _build (BlockState bn nbi 0 sl bl) = let
+    slBlock = FCSimpleBlock bn (reverse sl)
+    in
+    if null bl then slBlock else FCComplexBlock bn (reverse (slBlock:bl))
+  _build BlockState {} = error "Cannot build block which have an opened simple block."
   -- _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) Nothing (Just postBlock) _) =
   --   FCCondBlock conBlock successBlock postBlock
   -- _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) (Just failureBlock) (Just postBlock) _) =
@@ -376,7 +382,18 @@ instance BlockBuilder BlockState FCInstr FCBlock where
   -- _build (WhileBlockState bname _ (Just cb) (Just s) (Just p) _) =
   --   FCWhileBlock cb s p
   -- _build WhileBlockState{} = undefined
-
+  _build _ = error "_build: WIP"
+  _prependStmt stmt block = case block of
+    BlockState s n i fis fbs -> BlockState s n i (stmt:fis) fbs
+    FunBlockState {} -> error "_prependStmt dla FunBlock"
+    _ -> error "Pojedyncze akcje powinny być prependowane jedynie do zwykłego bloku"
+  _prependBlock a block = case block of
+    BlockState s n i fci fbs -> BlockState s n i [] (a:FCSimpleBlock s fci:fbs)
+    CondBlockState s n m_fb m_fr ma m_fb' ma' bt -> error "_preprend CondBlockState: unimplemented"
+    WhileBlockState s n m_fb ma m_fb' bt -> error "_preprend WhileBlockState: unimplemented"
+    FunBlockState s m_fb -> case m_fb of
+      Just _ -> error "FunBlockState może posiadać tylko jedno dziecko"
+      Nothing -> FunBlockState s (Just a)
 
 data FCC = FCC {venv::FCVarEnv, regenv::RegSt, constants::CompileTimeConstants, blocks::[BlockState]}
 type FCCompiler = State FCC
@@ -405,7 +422,13 @@ prependFCRValue r rvalue = do
   result <- _mapFCRValueRegType r rvalue . regenv <$> get
   case snd result of
     Left r' -> return r'
-    Right r' -> modify (fccPutRegenv $ fst result) >> return r'
+    Right r' -> modify (fccPutRegenv $ fst result) >>
+      do
+        blockList <- gets blocks
+        when (null blockList) (error "preprendFCRValue - null for blocklist")
+        modify $ fccPutBlock (_prependStmt (r', rvalue) (head blockList):tail blockList)
+        return r'
+
 getConstStringEt :: String -> FCCompiler String
 getConstStringEt s = do
   (consEnb, et) <- _getPointer s . constants <$> get
@@ -463,12 +486,12 @@ openBlock bt = do
             Nothing -> case bt of
               Normal -> newSimpleBlock (blockName parent) 0:parent:rest
               _ -> error "FunBlock can have only normal son"
-        (BlockState bN nBI oSB sL bL) -> error "OpenBlock: BlockState unimplemented"
-        --   case bt of
-        --     Normal -> BlockState bN nBI (oSB + 1) sL bL:rest
-        --     Cond -> newCondBlockSt (bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock "" sL:bL):rest)
-        --     While -> newWhileBlockSt(bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock "" sL:bL):rest)
-        --     _ -> error "OpenBlock BlockState: case undefined"
+        (BlockState bN nBI oSB sL bL) ->
+          case bt of
+            Normal -> BlockState bN nBI (oSB + 1) sL bL:rest
+            Cond -> newCondBlockSt (bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock "" sL:bL):rest)
+            While -> newWhileBlockSt(bN ++ show nBI):(BlockState bN nBI oSB [] (FCSimpleBlock "" sL:bL):rest)
+            _ -> error "OpenBlock BlockState: case undefined"
         (CondBlockState bn osb cb cr s f p c) -> error "OpenBlock: CondBlockState unimplemented"
         --   case bt of
         --     Check -> BlockState bn 0 0 [] [] :CondBlockState bn osb cb cr s f p bt :rest
@@ -498,19 +521,27 @@ openBlock bt = do
 closeBlock :: FCCompiler ()
 closeBlock = do
   fcc <- get
-  let ve' = VE.closeClosure . venv $ fcc
-      newBlocks = []
+  let ve' = VE.closeClosure $ venv  fcc
+      newBlocks = f $ blocks fcc
   modify $ fccPutVenv ve' . fccPutBlock newBlocks
   where
     f :: [BlockState] -> [BlockState]
-    f (block : (FunBlockState name maybe):rest) = case maybe of
-      Just _ -> error "FunBlock powinień mieć tylko jedno dziecko"
-      Nothing -> case rest of
-        [] -> [FunBlockState name (Just (_build block))]
-        _ -> error "FunBlockState musi być ostatnim budowniczym"
-    f (blockSt@(BlockState _ _ 0 _ _):parent:rest) = error "BlockState 0 unimplemented"
-    f (BlockState bn nBI r sL bL : rest) = BlockState bn nBI (r - 1) sL bL : rest
-    f (block:rest) = error "BlockState od fallthrough unimplemented"
+    f ((FunBlockState name maybe):rest) = error "FunBlockState musi być zamknięty przy pomocy specjalnej funkcji"
+    f (block@(BlockState bn nBI r sL bL) : rest) =
+      if r == 0
+      then
+        if null rest
+        then error "BlockState cannot be the last BlockBuilder"
+        else _prependBlock (_build block) (head rest) : tail rest
+      else
+        BlockState bn nBI (r - 1) sL bL:rest
+    f (block:parent:rest) = _prependBlock (_build block) parent : rest
+    f _ = error "FunBlockState nie jest ostatnim BlockBuilderem"
+    -- f (block : (FunBlockState name maybe):rest) = case maybe of
+    --   Just _ -> error "FunBlock powinień mieć tylko jedno dziecko"
+    --   Nothing -> case rest of
+    --     [] -> _prependBlock (_build block) 
+        -- _ -> error "FunBlockState musi być ostatnim budowniczym"
     -- f (blockSt@(BlockState _ _ 0 _ _) : CondBlockState bn osb cb cr s f p c : rest) =
     --   case c of
     --     Check -> CondBlockState bn osb (Just block) cr s f p c' : rest
@@ -533,6 +564,7 @@ closeBlock = do
     -- f (blockSt@(BlockState _ _ 0 _ _) : (BlockState bn nbi osb sl bl) : rest) =
     --   BlockState bn nbi osb sl (_build blockSt:bl):rest
     -- f _ = undefined
+
 
 protectVariablesCond :: [String] -> FCCompiler ()
 protectVariablesCond vars = do

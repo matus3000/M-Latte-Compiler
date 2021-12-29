@@ -176,6 +176,10 @@ instance Show FCRValue where
   showsPrec _ (FCBinOp ftype fbop r1 r2) s =
     show fbop ++ " " ++ show ftype ++ " " ++ show r1 ++ ", "
     ++ show r2 ++ s
+  showsPrec _ (Return ftype m_fcr) s = "ret " ++
+    (case m_fcr of
+      Just val -> show ftype ++ " " ++ show val
+      Nothing -> "") ++ s
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
 class ShowWithIndent a where
@@ -184,7 +188,8 @@ class ShowWithIndent a where
   showIndent = flip showsIndent ""
 
 instance ShowWithIndent FCInstr where
-  showsIndent (reg, instr) rest = indent (show reg ++ " = " ++ show instr ++ show rest)
+  showsIndent (reg, rval@(Return _ _)) rest = indent (show rval ++ rest)
+  showsIndent (reg, instr) rest = indent (show reg ++ " = " ++ show instr ++ rest)
   showIndent x = showsIndent x ""
   
 instance ShowWithIndent FCBlock where

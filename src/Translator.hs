@@ -110,8 +110,8 @@ data IExpr = IVar String |
   IString String |
   INeg IExpr |
   INot IExpr |
-  IAnd IExpr IExpr |
-  IOr IExpr IExpr |
+  IAnd [IExpr] |
+  IOr [IExpr] |
   IAdd IAddOp IExpr IExpr |
   IMul IMulOp IExpr IExpr |
   IRel IRelOp IExpr IExpr
@@ -202,9 +202,12 @@ f (EOr pos e1 e2) = let
     do
       (itype, iRight) <- exprToInternal exp
       case itype of
-        (StaticBool True) -> return (DynamicBool, IOr iLeft iRight) -- Tu jest miejsce na optymalizację
+        -- (StaticBool True) -> return (DynamicBool, IOr iLeft iRight) -- 30.12 Przed optymalizacją
+        (StaticBool True) -> return (DynamicBool, iLeft) -- 30.12 Po optymalizacją
         (StaticBool False) -> return left
-        DynamicBool -> return (DynamicBool, IOr iLeft iRight)
+        DynamicBool -> case iRight of 
+          IOr ies -> return $ (DynamicBool, IOr (iLeft:ies))
+          _ -> return (DynamicBool, IOr [iLeft, iRight])
         _ -> throwErrorInContext (TypeConflict (getPosition e2) LBool (cast itype))
   x left@(StaticBool True, _) _ = return left
   x (ltype, _) _ = throwErrorInContext (TypeConflict (getPosition e1) LBool (cast ltype))
@@ -224,7 +227,9 @@ f (EAnd pos e1 e2) =
           case itype of
             (StaticBool False) -> return (StaticBool False, ILitBool False)
             (StaticBool True) -> return left
-            DynamicBool -> return (DynamicBool, IAnd iLeft iRight)
+            DynamicBool -> case iRight of
+              IAnd ies -> return (DynamicBool, IAnd (iLeft:ies))
+              _ -> return (DynamicBool, IAnd [iLeft, iRight])
             _ -> throwErrorInContext (TypeConflict (getPosition e2) LBool (cast itype))
       x left@(StaticBool False, _) _ = return left
       x (ltype, _) _ = throwErrorInContext (TypeConflict (getPosition e1) LBool (cast ltype))

@@ -169,6 +169,9 @@ instance Show FCBinaryOperator where
     case x of
       Add -> "add"
       Sub -> "sub"
+      Mul -> "mul"
+      Div -> "sdiv"
+      Mod -> "srem"
       _ -> error "show FCBinOP undefined"
 
 
@@ -176,9 +179,9 @@ instance Show FCRValue where
   showsPrec _ (FCBinOp ftype fbop r1 r2) s =
     show fbop ++ " " ++ show ftype ++ " " ++ show r1 ++ ", "
     ++ show r2 ++ s
-  showsPrec _ (Return ftype m_fcr) s = "ret " ++
+  showsPrec _ (Return ftype m_fcr) s = "ret " ++ show ftype ++
     (case m_fcr of
-      Just val -> show ftype ++ " " ++ show val
+      Just val -> " " ++ show val
       Nothing -> "") ++ s
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
@@ -201,8 +204,8 @@ instance ShowWithIndent FCFun where
   showsIndent (FCFun name rt args body) s = do
     (length, ident, current) <- ask
     sbody <- addIndentation $ showsIndent body ("}" ++ s)
-    indent $ "declare " ++ show rt ++ " @" ++ name ++
-      "(" ++ showArgs args ++ "){\n" ++ sbody
+    indent $ "define " ++ show rt ++ " @" ++ name ++
+      "(" ++ showArgs args ++ ") {\n" ++ sbody
       where
         showArgs :: [(FCType, FCRegister)] -> String
         showArgs = foldr (\(ftype, freg) s -> show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""

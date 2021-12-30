@@ -122,9 +122,10 @@ translateExpr x save =
       Tr.IVar s -> getVar s
       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
-      -- Tr.INeg ie -> do
-      --   reg <- translateExpr ie True
-      --   prependFCRValue RNormal $ FCUnOp Neg reg
+      Tr.INeg ie ->  do
+        (ftype, reg) <- translateExpr ie True
+        reg' <- prependFCRValue RNormal $ FCUnOp ftype Neg reg
+        return (ftype, reg')
       -- Tr.INot ie -> do
       --   reg <- translateExpr ie True
       --   prependFCRValue RNormal $ FCUnOp BoolNeg reg

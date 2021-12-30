@@ -27,6 +27,7 @@ import qualified Translator as Tr
 import qualified Data.Map as DM
 import qualified IDefinition as IDef
 import qualified Data.Foldable
+import System.Posix (sleep)
 
 
 
@@ -37,9 +38,33 @@ data FCType = Int | Bool | String | Void
   deriving (Eq, Ord)
 
 data FCBinaryOperator = Add | Sub | Div | Mul | Mod | LShift | RShif | ByteAnd | ByteOr | ByteXor |
-                     BoolAnd | BoolOr | BoolXor  | Test | Le | Equ | Neq | Lth | Gth | Ge
+                        BoolAnd | BoolOr | BoolXor | Le | Equ | Neq | Lth | Gth | Ge
   deriving (Eq, Ord)
 
+data FCOperatorType = FArithmetic | FBoolean
+
+binOpType :: FCBinaryOperator -> FCOperatorType
+binOpType x = case x of
+  Add -> FArithmetic
+  Sub -> FArithmetic
+  Div -> FArithmetic
+  Mul -> FArithmetic
+  Mod -> FArithmetic
+  LShift -> FArithmetic
+  RShif -> FArithmetic
+  ByteAnd -> FBoolean
+  ByteOr -> FBoolean
+  ByteXor -> FBoolean
+  BoolAnd -> FBoolean
+  BoolOr -> FBoolean
+  BoolXor -> FBoolean
+  Le -> FBoolean
+  Equ -> FBoolean
+  Neq -> FBoolean
+  Lth -> FBoolean
+  Gth -> FBoolean
+  Ge -> FBoolean
+  
 data FCRegister = VoidReg | Reg String | DReg Integer| LitInt Int | LitBool Bool | Et String
   deriving (Eq, Ord)
 
@@ -101,7 +126,7 @@ instance Show FCRegister where
   showsPrec _ VoidReg = showString ""
   showsPrec _ (Reg str) = showString "%" . showString str
   showsPrec _ (DReg int) = showString "%" . shows int
-  showsPrec y (LitBool x) = showsPrec y x
+  showsPrec y (LitBool x) = showsPrec y (if x then 1 else 0)
   showsPrec y (LitInt x) = showsPrec y x
   showsPrec _ (Et et) = showString et
 
@@ -113,6 +138,14 @@ instance Convertable IDef.LType FCType where
     IDef.LVoid  -> Void
     _ -> undefined
 
+instance Convertable Tr.IRelOp FCBinaryOperator where
+  convert x = case x of
+    Tr.ILTH -> Lth
+    Tr.ILE -> Le
+    Tr.IGTH -> Gth
+    Tr.IGE -> Ge
+    Tr.IEQU -> Equ
+    Tr.INE -> Neq
 
 instance Convertable Tr.IAddOp FCBinaryOperator where
   convert x = case x of
@@ -128,7 +161,9 @@ instance Convertable Tr.IMulOp FCBinaryOperator where
 fCRValueType :: FCRValue -> FCType
 fCRValueType x = case x of
   FunCall ft s frs -> ft
-  FCBinOp ft fbo fr fr' -> ft
+  FCBinOp ft fbo fr fr' -> case binOpType fbo of
+    FArithmetic -> ft
+    FBoolean -> Bool
   FCUnOp ft fuo fr -> ft
   ConstValue ft fr -> ft
   GetPointer ft fr fr' -> ft
@@ -172,6 +207,12 @@ instance Show FCBinaryOperator where
       Mul -> "mul"
       Div -> "sdiv"
       Mod -> "srem"
+      Lth -> "icmp slt"
+      Le  -> "icmp sle"
+      Equ -> "icmp eq"
+      Neq -> "icmp ne"
+      Gth -> "icmp sgt"
+      Ge  -> "icmp sge"
       _ -> error "show FCBinOP undefined"
 
 

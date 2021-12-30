@@ -76,26 +76,6 @@ data BlockState = BlockState { blockName::String,
 fccNew :: FCC
 fccNew = FCC newVarEnv regStNew ctcNew []
 
-data FCBOType = Arithmetic | Boolean | Relation | Bitwise
-
-binOpGetType :: FCBinaryOperator  -> FCBOType
-binOpGetType x = case x of
-  Add -> Arithmetic
-  Sub -> Arithmetic
-  Div -> Arithmetic
-  Mul -> Arithmetic
-  Mod -> Arithmetic
-  LShift -> Arithmetic
-  RShif -> Arithmetic
-  ByteAnd -> Bitwise
-  ByteOr -> Bitwise
-  ByteXor -> Bitwise
-  BoolAnd -> Boolean
-  BoolOr -> Boolean
-  BoolXor -> Boolean
-  Test -> Boolean
-
-
 translateExpr :: Tr.IExpr -> Bool -> FCCompiler (FCType, FCRegister)
 translateExpr x save =
   let
@@ -146,10 +126,11 @@ translateExpr x save =
       --         FunCall fun args
       --   in
       --   isFunStatic fun >>= r True
-      -- Tr.IRel iro ie ie' -> do
-      --   r2 <- translateExpr ie' True
-      --   r1 <- translateExpr ie True
-      --   prependFCRValue RNormal $ FCBinOp (convert iro) r1 r2
+      Tr.IRel iro ie ie' -> do
+        (ftype2, r2) <- translateExpr ie' True
+        (ftype1, r1) <- translateExpr ie True
+        reg <- prependFCRValue RNormal $ FCBinOp ftype1 (convert iro) r1 r2
+        return (Bool, reg)
       _ -> error "Unimplemented TR.Expr for TranslateExpr"
 
 translateIItem :: Tr.IItem -> FCCompiler ()
@@ -292,16 +273,6 @@ compileProg ifun = let
 -- compileFun = undefined
 -- compileToFC :: [Tr.IFun] -> CompilerExcept ()
 -- compileToFC = undefined
-
-
-instance Convertable Tr.IRelOp FCBinaryOperator where
-  convert x = case x of
-    Tr.ILTH -> Lth
-    Tr.ILE -> Le
-    Tr.IGTH -> Gth
-    Tr.IGE -> Ge
-    Tr.IEQU -> Equ
-    Tr.INE -> Neq
 
 
 -- putConstState :: ConstStringEnv -> FCC ()

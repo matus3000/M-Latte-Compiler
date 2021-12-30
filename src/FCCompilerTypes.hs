@@ -183,6 +183,10 @@ instance Show FCRValue where
     (case m_fcr of
       Just val -> " " ++ show val
       Nothing -> "") ++ s
+  showsPrec _ (FCUnOp ftype fuop r1) s = case fuop of
+    Neg -> "sub " ++ show ftype ++ " 0, " ++ show r1 ++ s
+    BoolNeg -> error "Instancja Show dla FCRValue(BoolNeg) niezdefiniowana"
+    -- show fuop ++
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
 class ShowWithIndent a where

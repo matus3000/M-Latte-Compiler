@@ -308,7 +308,7 @@ f e0@(Neg pos expr) = do
   return $
     case itype of
       (StaticInt x) -> (StaticInt (-x), ILitInt (-x))
-      _ -> (DynamicInt, iexpr)
+      _ -> (DynamicInt, INeg iexpr)
 
 simplify :: (IType, IExpr) -> (IType, IExpr)
 simplify pair = pair

@@ -2,6 +2,8 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TupleSections #-}
+
 -- TO DO:
 -- a) Zamienić mapM getVar foldable na getVars
 -- b) Sprawić, żeby return nie otrzymawało normalnego rejestru, tylko rejestr typu void.
@@ -46,41 +48,25 @@ data CompileTimeConstants = CTC {constMap :: DM.Map String String,
                                  nextEtId :: Int}
 ctcNew = CTC DM.empty 0
 
-type BlockBuilder = [FCBlock]
+data BlockBuilder = BB {instrAcc::[FCInstr], blockAcc::[FCBlock]}
 
 bbaddBlock :: FCBlock -> BlockBuilder -> BlockBuilder
-bbaddBlock = error "BBADDBLOCK"
+bbaddBlock block bb = BB []
+  (block:(
+      case instrAcc bb of
+        [] -> blockAcc bb
+        instrs -> FCSimpleBlock "" (reverse instrs): blockAcc bb))
 bbaddInstr :: FCInstr -> BlockBuilder -> BlockBuilder
-bbaddInstr = error "addInstr"
+bbaddInstr instr bb = BB (instr:instrAcc bb) (blockAcc bb)
 bbBuild :: BlockBuilder -> FCBlock
-bbBuild = error "addBlock"
-
--- data BlockState = BlockState { blockName::String,
---                                nextBlockId::Int,
---                                openedSimpleBlocks :: Int,
---                                stmtsList :: [FCInstr],
---                                blockList :: [FCBlock]} |
---                   AndBlockState {blockName::String,
---                                  preparation::[FCInstr],
---                                  leftOperandNumber :: Int} |
---                   CondBlockState {blockName :: String,
---                                    openedSimpleBlocks :: Int,
---                                    conditionBlock :: Maybe FCBlock,
---                                    conditionReg :: Maybe FCRegister,
---                                    success :: Maybe FCBlock,
---                                    failure :: Maybe FCBlock,
---                                    post :: Maybe FCBlock,
---                                    current :: BlockType} |
---                   WhileBlockState {blockName :: String,
---                                    openedSimpleBlocks :: Int,
---                                    conditionBlock :: Maybe FCBlock,
---                                    success :: Maybe FCBlock,
---                                    post :: Maybe FCBlock,
---                                    current :: BlockType
---                                   } |
---                   FunBlockState { blockName :: String,
---                                   body :: Maybe FCBlock
---                                 }
+bbBuild bb = FCComplexBlock
+  ""
+  (reverse $
+    case instrAcc bb of
+      [] -> blockAcc bb
+      intrs -> FCSimpleBlock "" (reverse intrs):blockAcc bb)
+bbNew :: BlockBuilder
+bbNew = BB [] []
 
 fccNew :: FCC
 fccNew = FCC newVarEnv regStNew ctcNew []
@@ -148,6 +134,7 @@ fccPutBlocksCounts fbc' (FCC ve re c fbc) = FCC ve re c fbc'
 translateExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
 translateExpr bname bb ie save =
   let
+    translateExprAddMull :: Tr.IExpr -> BlockBuilder -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
     translateExprAddMull ie bb save =
       let
         u :: (FCBinaryOperator, Tr.IExpr, Tr.IExpr)
@@ -159,22 +146,22 @@ translateExpr bname bb ie save =
         do
           (bb', (t1, r1)) <- translateExpr bname bb ie1 True
           (bb'', (t2, r2)) <- translateExpr bname bb' ie2 True
-          r <- prependFCRValue RNormal $ FCBinOp t1 op r1 r2
-          return (t1, r)
+          (b''', r) <- emplaceFCRValue RNormal (FCBinOp t1 op r1 r2) bb''
+          return (b''', (t1, r))
   in
     case ie of
---       Tr.ILitInt n -> return  (Int , (LitInt . fromInteger) n)
---       Tr.ILitBool b -> return (Bool, LitBool b)
+      Tr.ILitInt n -> return  (bb, (Int , LitInt $ fromInteger n))
+      Tr.ILitBool b -> return (bb, (Bool, LitBool b))
 --       -- Tr.IString s -> do
 --       --   constEt <- getConstStringEt s
 --       --   prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
---       Tr.IVar s -> getVar s
---       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr save
---       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr save
---       Tr.INeg ie ->  do
---         (ftype, reg) <- translateExpr ie True
---         reg' <- prependFCRValue RNormal $ FCUnOp ftype Neg reg
---         return (ftype, reg')
+      Tr.IVar s -> (bb, ) <$> getVar s
+      addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr bb save
+      mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr bb save
+      Tr.INeg ie ->  do
+        (bb', (ftype, reg)) <- translateExpr' bb ie True
+        (bb'', reg') <- emplaceFCRValue RNormal (FCUnOp ftype Neg reg) bb'
+        return (bb'', (ftype, reg'))
 --       -- Tr.INot ie -> do
 --       --   reg <- translateExpr ie True
 --       --   prependFCRValue RNormal $ FCUnOp BoolNeg reg
@@ -195,13 +182,14 @@ translateExpr bname bb ie save =
 --       --         FunCall fun args
 --       --   in
 --       --   isFunStatic fun >>= r True
---       Tr.IRel iro ie ie' -> do
---         (ftype2, r2) <- translateExpr ie' True
---         (ftype1, r1) <- translateExpr ie True
---         reg <- prependFCRValue RNormal $ FCBinOp ftype1 (convert iro) r1 r2
---         return (Bool, reg)
+      Tr.IRel iro ie ie' -> do
+        (bb', (ftype1, r1)) <- translateExpr' bb ie True
+        (bb'', (ftype2, r2)) <- translateExpr' bb' ie' True
+        (bb''', reg) <- emplaceFCRValue RNormal (FCBinOp ftype1 (convert iro) r1 r2) bb''
+        return (bb''', (Bool, reg))
       _ -> error "Unimplemented TR.Expr for TranslateExpr"
-
+  where
+    translateExpr' = translateExpr bname
 translateIItem :: String -> Tr.IItem -> BlockBuilder -> FCCompiler BlockBuilder
 translateIItem bname (Tr.IItem s ie) bb=
   do
@@ -316,7 +304,8 @@ translateFun :: Tr.IFun -> FCCompiler FCFun
 translateFun (Tr.IFun s lt lts ib) =
   withOpenFunBlock s lt lts $ \res ->
   do
-    return FCFun {name = s, retType = convert lt, args = res, FCT.body = error "Lack of Body"}
+    fbody <- translateBlock (s ++ "b") ib bbNew
+    return FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild fbody}
 
 translateProg :: [Tr.IFun] -> FCCompiler FCProg
 translateProg list = do
@@ -454,7 +443,7 @@ isFunStatic _ = return False
 emplaceFCRValue :: RegType -> FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue r rvalue bb = do
   result <- _mapFCRValueRegType r rvalue . fccRegEnv <$> get
-  undefined 
+  undefined
   case snd result of
     Left r' -> return (bb, r')
     Right r' -> modify (fccPutRegenv $ fst result) >> return (bbaddInstr (r', rvalue) bb, r')

@@ -304,7 +304,9 @@ translateFun :: Tr.IFun -> FCCompiler FCFun
 translateFun (Tr.IFun s lt lts ib) =
   withOpenFunBlock s lt lts $ \res ->
   do
-    fbody <- translateBlock (s ++ "b") ib bbNew
+    -- fbody <- translateBlock (s ++ "b") ib bbNew
+    fbody <- do
+      return bbNew
     return FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild fbody}
 
 translateProg :: [Tr.IFun] -> FCCompiler FCProg
@@ -312,17 +314,17 @@ translateProg list = do
   fbodies <- mapM
     ( \ifun ->
         do
-          modify (fccPutVenv newVarEnv)
-          modify (fccPutBlocksCounts [])
           translateFun ifun
     ) list
   return $ FCProg fbodies
 
 compileProg :: [Tr.IFun] -> FCProg
 compileProg ifun = let
-  (s, a) = runState (translateProg ifun) fccNew
+  (s, a) = runState (translateProg ifun) initialFcc
   in
   s
+  where
+    initialFcc = fccPutVenv (VE.openClosure $ fccVenv fccNew) fccNew
 -- compileBlock :: Tr.IBlock -> CompilerExcept [FCBlock]
 -- compileBlock = undefined
 -- compileFun :: Tr.IFun -> CompilerExcept ()
@@ -460,7 +462,6 @@ openFunBlock fname lret args =
     fcc <- get
     let
       blockStates = [0]
-      varenv = fccVenv fcc
       regst = fccRegEnv fcc
       len = length args
       (rs, regst') = foldr
@@ -478,7 +479,7 @@ openFunBlock fname lret args =
         (zip args [1..len])
       varenv' = foldl
         (\varenv (var, reg) -> VE.declareVar var reg varenv)
-        varenv
+        (VE.openClosure $ fccVenv fcc)
         (zip (fst <$> args) rs)
     put (FCC varenv' regst' (fccConstants fcc) [0])
     return $ zip (map convert (snd <$> args)) rs
@@ -487,15 +488,17 @@ closeFunBlock :: FCCompiler ()
 closeFunBlock = do
   fcc <- get
   let ve' = VE.closeClosure (fccVenv fcc)
-      bc' = tail (fccBlocksCounts fcc)
+      bc' = if null (fccBlocksCounts fcc) then error " " else tail (fccBlocksCounts fcc)
   checkVarEnv ve'
   checkBlocks bc'
   modify (fccPutVenv ve' . fccPutBlocksCounts bc')
   where
     checkVarEnv :: FCVarEnv -> FCCompiler ()
-    checkVarEnv = undefined
+    checkVarEnv  (VE.VarEnv map s1 s2) = do
+      when (length s1 /= 1) (error $ "Lenght of modified variables does not equals to 1: " ++ show (length s1))
+      when (length s2 /= 1) (error $ "Lenght of redeclared variables does not equals to 1: " ++ show (length s2))
     checkBlocks :: [Int] -> FCCompiler ()
-    checkBlocks = undefined
+    checkBlocks list = unless (null list) (error $ "Length of ids should be 0 is: " ++ show (length list))
 
 withOpenFunBlock :: String -> IDef.LType -> [(String, IDef.LType)] ->
   ([(FCType, FCRegister)] -> FCCompiler a) -> FCCompiler a
@@ -532,9 +535,9 @@ openBlock bt = do
       fccbc' =case bt of
         FunBody -> error "OpenBlock FunBody"
         Normal -> fccbc
-        BoolExp -> (1 + head fccbc):tail fccbc
-        Cond -> (1 + head fccbc):tail fccbc
-        While -> (1 + head fccbc):tail fccbc
+        -- BoolExp -> (1 + head fccbc):tail fccbc
+        -- Cond -> (1 + head fccbc):tail fccbc
+        -- While -> (1 + head fccbc):tail fccbc
         Check -> 0:fccbc
         Success -> 0:fccbc
         Failure -> 0:fccbc
@@ -553,12 +556,12 @@ closeBlock bt = do
         BoolExp -> bc
         Cond -> bc
         While -> bc
-        Check -> tail bc
-        Success -> tail bc
-        Failure -> tail bc
-        Post -> tail bc
+        -- Check -> tail bc
+        -- Success -> tail bc
+        -- Failure -> tail bc
+        -- Post -> tail bc
         BTPlacceHolder -> error "OpenBlock PlaceHolder"
-  return ()
+  modify (fccPutVenv ve' . fccPutBlocksCounts bc')
 
 withOpenBlock :: String -> BlockType -> (String -> FCCompiler a )-> FCCompiler a
 withOpenBlock bname bt x = do

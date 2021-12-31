@@ -18,7 +18,7 @@ import System.IO (stderr, hPutStrLn)
 import System.Exit
 
 import qualified IDefinition as IDef
-import LLVMCompiler(compileProg)
+import FCCompiler(compileProg)
 import FCCompilerTypes(ShowWithIndent(..), runIndentMonad)
 
 import qualified Latte.Abs as Lt

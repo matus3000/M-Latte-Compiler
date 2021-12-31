@@ -10,7 +10,7 @@ import Prelude
 import Data.Maybe (fromMaybe)
 import CompilationError(SemanticError)
 import Control.Monad.Error.Class (MonadError)
-import Control.Monad.Except (Except)
+import Control.Monad.Except (Except, unless)
 
 class (Ord key) => CVariableEnvironment a key value | a -> key value where
   setVar :: key -> value -> a -> a
@@ -25,7 +25,7 @@ class (Ord key) => CVariableEnvironment a key value | a -> key value where
   endProtection :: a -> a
 
 newVarEnv :: (Ord vartype) => VarEnv vartype value
-newVarEnv = openClosure (VarEnv DM.empty [] [])
+newVarEnv = VarEnv DM.empty [] []
 
 data VarEnv vartype value = VarEnv {varmap :: DM.Map vartype [value],
                                          modifiedVars :: [DS.Set vartype],
@@ -54,18 +54,21 @@ instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
   openClosure (VarEnv vmap modvars redvars) = VarEnv vmap (DS.empty : modvars) (DS.empty : redvars)
   closeClosure (VarEnv vmap modvars redvars) =
     let
-      snd :: [a] -> Maybe a
-      snd (x:y:rest) = Just y
-      snd _ = Nothing
-      modified = head modvars
-      parent = DS.empty `fromMaybe` snd modvars
       popKey :: (Ord key) => key -> DM.Map key [a] -> DM.Map key [a]
       popKey x map = DM.insert x vs map
         where
           (v:vs) = [] `fromMaybe` DM.lookup x map
     in
-      VarEnv (foldl (flip popKey) vmap (head redvars))
-      (DS.union modified parent:(tail.tail$modvars)) (tail redvars)
+      if length modvars /= length redvars then
+        error "Modvars does not equals to redvars"
+      else
+        case (modvars, redvars) of
+          ([modSet], [redSet]) -> VarEnv (foldl (flip popKey) vmap redSet) [] []
+          ([], []) -> error "CloseClosure on closed var environment"
+          _ -> VarEnv (foldl (flip popKey) vmap (head redvars))
+            (DS.union (head modvars) (head $ tail modvars): tail (tail modvars))
+            (tail redvars)
+
   protectVars keys  vals  venv = foldl
     (\venv (key, val) -> if containsVar key venv then declareVar key val venv else venv)
     (openClosure venv)

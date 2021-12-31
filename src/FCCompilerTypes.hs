@@ -258,7 +258,9 @@ instance ShowWithIndent FCInstr where
 instance ShowWithIndent FCBlock where
   showsIndent (FCSimpleBlock _ linstr) rest =
     Data.Foldable.foldrM (\instr s -> showsIndent instr ("\n" ++ s)) rest linstr
-  showsIndent _ rest = error "Unimplemented instance of showWithIndent for FCBlock"
+  showsIndent (FCComplexBlock _ lblocks) rest =
+    Data.Foldable.foldrM (\instr s -> showsIndent instr ("\n" ++ s)) rest lblocks
+  showsIndent _ rest = error ""
 
 instance ShowWithIndent FCFun where
   showsIndent (FCFun name rt args body) s = do

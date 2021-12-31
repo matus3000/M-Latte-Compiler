@@ -15,6 +15,8 @@ module FCCompilerTypes (
   FCProg(..),
   ShowWithIndent(..),
   fCRValueType,
+  jump,
+  conditionalJump,
   runIndentMonad)
 where
 
@@ -30,6 +32,7 @@ import qualified Data.Foldable
 import System.Posix (sleep)
 
 
+data FCControlFlowOp = Jmp
 
 data FCUnaryOperator = Neg | BoolNeg
   deriving (Eq, Ord)
@@ -64,18 +67,24 @@ binOpType x = case x of
   Lth -> FBoolean
   Gth -> FBoolean
   Ge -> FBoolean
-  
+
 data FCRegister = VoidReg | Reg String | DReg Integer| LitInt Int | LitBool Bool | Et String
   deriving (Eq, Ord)
+
+type PhiFrom = FCRegister
+type PhiValue = FCRegister
 
 data FCRValue = FunCall FCType String [FCRegister] |
                 FCBinOp FCType FCBinaryOperator FCRegister FCRegister |
                 FCUnOp FCType FCUnaryOperator FCRegister |
+                FCPhi [(FCRegister, FCRegister)] |
                 ConstValue FCType FCRegister |
                 GetPointer FCType FCRegister FCRegister |
                 Return FCType (Maybe FCRegister) |
                 FCEmptyExpr |
-                FCFunArg FCType String Int
+                FCFunArg FCType String Int |
+                FCJump FCRegister |
+                FCCondJump FCRegister FCRegister FCRegister
   deriving (Eq, Ord)
 
 type FCInstr = (FCRegister, FCRValue)
@@ -120,7 +129,7 @@ data FCProg = FCProg [FCFun]
 
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
-data BlockType = FunBody | Normal | Cond | While | Check | Success | Failure | Post | BTPlacceHolder
+data BlockType = FunBody | Normal | BoolExp | Cond | While | Check | Success | Failure | Post | BTPlacceHolder
 
 instance Show FCRegister where
   showsPrec _ VoidReg = showString ""
@@ -157,6 +166,12 @@ instance Convertable Tr.IMulOp FCBinaryOperator where
     Tr.ITimes -> Mul
     Tr.IDiv -> Div
     Tr.IMod -> Mod
+
+
+jump :: FCRegister -> (FCRValue)
+jump = FCJump
+conditionalJump :: FCRegister -> FCRegister -> FCRegister -> FCRValue
+conditionalJump = FCCondJump
 
 fCRValueType :: FCRValue -> FCType
 fCRValueType x = case x of
@@ -239,7 +254,7 @@ instance ShowWithIndent FCInstr where
   showsIndent (reg, rval@(Return _ _)) rest = indent (show rval ++ rest)
   showsIndent (reg, instr) rest = indent (show reg ++ " = " ++ show instr ++ rest)
   showIndent x = showsIndent x ""
-  
+
 instance ShowWithIndent FCBlock where
   showsIndent (FCSimpleBlock _ linstr) rest =
     Data.Foldable.foldrM (\instr s -> showsIndent instr ("\n" ++ s)) rest linstr
@@ -263,4 +278,4 @@ instance ShowWithIndent FCProg where
                 str <- x
                 showsIndent a ("\n" ++ str)) (return s) list
   showIndent = flip showsIndent ""
-  
+

@@ -27,7 +27,7 @@ import FCCompilerState (VariableEnvironment(..),
                         LLRegisterState(..),
                         ConstantsEnvironment(..),
                         BlockBuilder(..))
-import FCCompilerTypes (FCRValue(FCEmptyExpr),
+import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi),
                         FCType(..),
                         FCBlock(..))
 import VariableEnvironment(VarEnv(..), newVarEnv)
@@ -54,6 +54,9 @@ data BlockState = BlockState { blockName::String,
                                openedSimpleBlocks :: Int,
                                stmtsList :: [FCInstr],
                                blockList :: [FCBlock]} |
+                  AndBlockState {blockName::String,
+                                 preparation::[FCInstr],
+                                 leftOperandNumber :: Int} |
                   CondBlockState {blockName :: String,
                                    openedSimpleBlocks :: Int,
                                    conditionBlock :: Maybe FCBlock,
@@ -75,6 +78,56 @@ data BlockState = BlockState { blockName::String,
 
 fccNew :: FCC
 fccNew = FCC newVarEnv regStNew ctcNew []
+
+translateAndExpr :: Tr.IExpr -> Bool -> FCCompiler (FCType, FCRegister )
+translateAndExpr (Tr.IAnd (ie:ies)) _ =
+  error "TranslateAndExpr: unimplemented"
+  where
+    _nextBlockName :: BlockType -> FCCompiler String
+    _nextBlockName blockType = do
+      x <- head . blocks <$> get
+      return $ nextBlockName x blockType
+    g :: Tr.IExpr -> [Tr.IExpr] -> FCCompiler (FCType, FCRegister)
+    g ie rest = do
+      openBlock BoolExp
+
+      postEt <- _nextBlockName Post
+      failureEt <- _nextBlockName Failure
+      successEt <- _nextBlockName Success
+
+      openBlock Normal
+      (ftype, c) <- translateExpr ie True
+      closeBlock
+
+      openBlock Success
+      (r1, successEt) <- f rest failureEt
+      closeBlock
+
+      openBlock Failure
+      prependFCRValue undefined (jump (Et postEt))
+      closeBlock
+
+      openBlock Post
+      res <- prependFCRValue RPhi (FCPhi [(r1, Et successEt), (LitBool False, Et failureEt)])
+      closeBlock
+
+      closeBlock
+      return (Void, undefined)
+    f :: [Tr.IExpr] -> String -> FCCompiler (FCRegister, String)
+    f [ie] _ = do
+      openBlock Normal
+      name <- getBlockName
+      (_, r) <- translateExpr ie True 
+      closeBlock
+      return (r, name)
+    f (ie1:rest) s = do
+      openBlock BoolExp
+      -- Really the same
+      closeBlock
+      undefined
+    f _ _ = error "translateAndExpr.f impossible fallthrough"
+
+
 
 translateExpr :: Tr.IExpr -> Bool -> FCCompiler (FCType, FCRegister)
 translateExpr x save =
@@ -295,6 +348,11 @@ compileProg ifun = let
 
 -- lookupRegister :: FCRegister -> FCCompiler FCType
 
+_nextNormalRegister :: RegSt -> (RegSt, FCRegister)
+_nextNormalRegister (RegSt regMap rvalueMap nextNormalId) =
+  (RegSt regMap rvalueMap (nextNormalId + 1), Reg $ "R" ++ show nextNormalId)
+_putRegisterValue :: FCRegister -> FCRValue -> RegSt -> RegSt
+_putRegisterValue = undefined
 instance LLRegisterState RegSt where
   _lookupRegister reg (RegSt regMap rvalueMap nextNormalIbd) = DM.lookup reg regMap
   _normalizeFCRValue fcrValue (RegSt regMap rvalueMap nextNormalIbd) = fcrValue
@@ -445,6 +503,25 @@ closeFunBlock = do
     [x] -> error "FunBlockState is not the last state"
     [] -> error "Empty list in close FunBlock"
     _ -> error "Before calling closeFunBlock list of open blocks should contain one element"
+
+nextBlockName :: BlockState -> BlockType -> String
+nextBlockName block bt =
+  let
+  btSuf = case bt of
+    Normal -> ""
+    BoolExp -> "B"
+    Cond -> "I"
+    While -> "W"
+    Check -> "C"
+    Success -> "S"
+    Failure -> "F"
+    Post -> "P"
+    _ -> error "nextBlockName: PartialFunction"
+  btNum = case block of
+    BlockState s n i x0 fbs -> show i
+    _ -> ""
+  in
+    blockName block ++ "btNum" ++ btSuf
 
 openBlock :: BlockType -> FCCompiler ()
 openBlock bt = do

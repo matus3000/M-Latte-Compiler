@@ -5,8 +5,7 @@
 
 module FCCompilerState (VariableEnvironment(..),
                         LLRegisterState(..),
-                        ConstantsEnvironment(..),
-                        BlockBuilder(..)) where
+                        ConstantsEnvironment(..)) where
 
 import FCCompilerTypes
 -- import Control.Monad.State.Strict

@@ -32,6 +32,7 @@ import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import qualified IDefinition as IDef
 import Data.Foldable (foldlM)
+import qualified VariableEnvironment as VC
 
 type FCVarEnv = VarEnv String FCRegister
 
@@ -298,17 +299,23 @@ translateInstr name bb stmt = case stmt of
 
 translateBlock :: String -> Tr.IBlock -> BlockBuilder -> FCCompiler BlockBuilder
 translateBlock blockName (Tr.IBlock stmts) rest =
-  withOpenBlock blockName Normal $ \blockName ->foldlM (translateInstr blockName) rest stmts
+  withOpenBlock blockName Normal $ (\blockName ->foldlM (translateInstr blockName) rest stmts)
 
 translateFun :: Tr.IFun -> FCCompiler FCFun
-translateFun (Tr.IFun s lt lts ib) =
+translateFun (Tr.IFun s lt lts ib) = do
   withOpenFunBlock s lt lts $ \res ->
-  do
-    -- fbody <- translateBlock (s ++ "b") ib bbNew
-    fbody <- do
-      return bbNew
-    return FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild fbody}
+    do
+      fbody <- translateBlock s ib bbNew
+      return $ FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild fbody}
 
+-- translateFunTest :: Tr.IFun -> FCCompiler FCFun
+-- translateFunTest (Tr.IFun s lt lts ib) = do
+--   withOpenFunBlock s lt lts $ \res ->
+--     (do
+--         x <- mapM (getVar . fst) lts
+--         return FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild bbNew}
+--     )
+    
 translateProg :: [Tr.IFun] -> FCCompiler FCProg
 translateProg list = do
   fbodies <- mapM
@@ -439,22 +446,21 @@ instance ConstantsEnvironment CompileTimeConstants String String where
 -- newWhileBlockSt :: String -> BlockState
 -- newWhileBlockSt name = WhileBlockState name 0 Nothing Nothing Nothing BTPlacceHolder
 
-isFunStatic :: String -> FCCompiler Bool
-isFunStatic _ = return False
+-- isFunStatic :: String -> FCCompiler Bool
+-- isFunStatic _ = return False
 
 emplaceFCRValue :: RegType -> FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue r rvalue bb = do
   result <- _mapFCRValueRegType r rvalue . fccRegEnv <$> get
-  undefined
   case snd result of
     Left r' -> return (bb, r')
     Right r' -> modify (fccPutRegenv $ fst result) >> return (bbaddInstr (r', rvalue) bb, r')
 
-getConstStringEt :: String -> FCCompiler String
-getConstStringEt s = do
-  (consEnb, et) <- _getPointer s . fccConstants <$> get
-  modify (fccPutConstants consEnb)
-  return et
+-- getConstStringEt :: String -> FCCompiler String
+-- getConstStringEt s = do
+--   (consEnb, et) <- _getPointer s . fccConstants <$> get
+--   modify (fccPutConstants consEnb)
+--   return et
 
 openFunBlock :: String -> IDef.LType -> [(String, IDef.LType)] -> FCCompiler [(FCType, FCRegister)]
 openFunBlock fname lret args =
@@ -463,6 +469,7 @@ openFunBlock fname lret args =
     let
       blockStates = [0]
       regst = fccRegEnv fcc
+      varenv = VC.openClosure $ fccVenv fcc
       len = length args
       (rs, regst') = foldr
         (\((var, ltyp), i) (list,regst) ->
@@ -479,7 +486,7 @@ openFunBlock fname lret args =
         (zip args [1..len])
       varenv' = foldl
         (\varenv (var, reg) -> VE.declareVar var reg varenv)
-        (VE.openClosure $ fccVenv fcc)
+        varenv
         (zip (fst <$> args) rs)
     put (FCC varenv' regst' (fccConstants fcc) [0])
     return $ zip (map convert (snd <$> args)) rs
@@ -564,9 +571,9 @@ closeBlock bt = do
   modify (fccPutVenv ve' . fccPutBlocksCounts bc')
 
 withOpenBlock :: String -> BlockType -> (String -> FCCompiler a )-> FCCompiler a
-withOpenBlock bname bt x = do
+withOpenBlock bname bt f = do
   openBlock bt
-  res <- x bname
+  res <- f bname
   closeBlock bt
   return res
 
@@ -607,13 +614,13 @@ getVar var = do
 
 setVar :: String -> FCRegister -> FCCompiler ()
 setVar var value = do
-  vars' <- gets $ VE.setVar var value . fccVenv
-  modify $ fccPutVenv vars'
+  vars <- gets fccVenv
+  modify $ fccPutVenv (VE.setVar var value vars)
 
 declVar :: String -> FCRegister -> FCCompiler ()
 declVar var value = do
-  vars' <- gets $ VE.declareVar var value . fccVenv
-  modify $ fccPutVenv vars'
+  vars <- gets fccVenv
+  modify $ fccPutVenv (VE.declareVar var value vars)
 
 phi :: [String] -> (String, [FCRegister]) -> (String, [FCRegister]) -> FCCompiler ()
 phi = undefined

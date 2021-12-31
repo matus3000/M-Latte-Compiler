@@ -34,8 +34,11 @@ data VarEnv vartype value = VarEnv {varmap :: DM.Map vartype [value],
 instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
   setVar key value (VarEnv vmap modvars redvars) =
     let x = [] `fromMaybe` DM.lookup key vmap
+        hmod = if (null modvars) then error "XX" else (head modvars)
     in
-      VarEnv (DM.insert key (value:tail x) vmap) (DS.insert key (head modvars) : tail modvars) redvars
+      VarEnv (DM.insert key (value:tail x) vmap) (DS.insert key hmod : tail modvars) redvars
+  declareVar key value venv@(VarEnv vmap [] _) = error "VE.DeclareVar: modifiedVars are empty List"
+  declareVar key value venv@(VarEnv vmap _ []) = error "VE.DeclareVar: redifinedVars are empty List"
   declareVar key value venv@(VarEnv vmap modvars redvars) =
     let
       x = [] `fromMaybe` DM.lookup key vmap

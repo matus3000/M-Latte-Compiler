@@ -537,7 +537,7 @@ topDefToInternal fDef fEnv = let
   funArgs = [(getIdStr i, getArgLType i) | i <- topDefArgs fDef]
   retType = fst $ (LVoid, []) `fromMaybe` DM.lookup funName fEnv
   block = topDefBlock fDef
-  nvEnv = foldl (\vEnv (id, ltype) -> declareVar id (lTypeToIType ltype) vEnv) newVarEnv funArgs
+  nvEnv = foldl (\vEnv (id, ltype) -> declareVar id (lTypeToIType ltype) vEnv) (openClosure newVarEnv) funArgs
   res = (`evalStateT` ((retType, funName, getPosition fDef), nvEnv)) $ runReaderT (blockToInternal block) fEnv
   in
     do

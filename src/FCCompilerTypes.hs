@@ -13,15 +13,16 @@ module FCCompilerTypes (
   RegType(..),
   BlockType(..),
   FCProg(..),
-  ShowWithIndent(..),
   fCRValueType,
   jump,
   conditionalJump,
-  runIndentMonad)
+  showFCProg,
+  buildIndentMonad,
+  printIndentMonad)
 where
 
 import Control.Monad.Except (Except, MonadError)
-import Control.Monad.State.Strict (MonadState)
+import Control.Monad.State.Strict (MonadState, StateT, State, get, put, modify, execState)
 import CompilationError(SemanticError, SemanticError(CompilationError))
 import Translator(CompilerExcept, Convertable(..))
 import Control.Monad.Reader
@@ -29,7 +30,6 @@ import qualified Translator as Tr
 import qualified Data.Map as DM
 import qualified IDefinition as IDef
 import qualified Data.Foldable
-import System.Posix (sleep)
 
 
 data FCControlFlowOp = Jmp
@@ -77,7 +77,7 @@ type PhiValue = FCRegister
 data FCRValue = FunCall FCType String [FCRegister] |
                 FCBinOp FCType FCBinaryOperator FCRegister FCRegister |
                 FCUnOp FCType FCUnaryOperator FCRegister |
-                FCPhi [(FCRegister, FCRegister)] |
+                FCPhi FCType [(PhiValue, PhiFrom)] |
                 ConstValue FCType FCRegister |
                 GetPointer FCType FCRegister FCRegister |
                 Return FCType (Maybe FCRegister) |
@@ -91,15 +91,24 @@ type FCInstr = (FCRegister, FCRValue)
 
 type FCSimpleBlock = [FCInstr]
 
-data FCBlock = FCSimpleBlock String FCSimpleBlock |
-               FCComplexBlock String [FCBlock] |
-               FCCondBlock {
-                 -- | 
-                 condition  :: FCBlock,
-                 -- | 
-                 onSuccess  :: FCBlock,
-                 -- |
-                 postFactum :: FCBlock} |
+data FCBlock =
+  FCNamedSBlock {bname ::String, instrs :: FCSimpleBlock}|
+  FCComplexBlock {bname :: String, blocks :: [FCBlock]} |
+  FCCondBlock {
+  bname     :: String,
+  condEval  :: FCBlock,
+  jmpReg    :: FCRegister,
+  success   :: FCBlock,
+  failure   :: FCBlock,
+  post      :: FCBlock
+  } |
+               FCPartialCond {
+                 bname :: String,
+                 condEval :: FCBlock,
+                 jmpReg :: FCRegister,
+                 success :: FCBlock,
+                 failure :: FCBlock
+               } |
                FCCondElseBlock {
                  -- | 
                  condition :: FCBlock,
@@ -137,7 +146,7 @@ instance Show FCRegister where
   showsPrec _ (DReg int) = showString "%" . shows int
   showsPrec y (LitBool x) = showsPrec y (if x then 1 else 0)
   showsPrec y (LitInt x) = showsPrec y x
-  showsPrec _ (Et et) = showString et
+  showsPrec _ (Et et) = showString "%" . showString et
 
 instance Convertable IDef.LType FCType where
   convert x = case x of
@@ -168,8 +177,8 @@ instance Convertable Tr.IMulOp FCBinaryOperator where
     Tr.IMod -> Mod
 
 
-jump :: FCRegister -> (FCRValue)
-jump = FCJump
+jump :: String -> (FCRValue)
+jump = FCJump . Et
 conditionalJump :: FCRegister -> FCRegister -> FCRegister -> FCRValue
 conditionalJump = FCCondJump
 
@@ -188,31 +197,11 @@ fCRValueType x = case x of
 
 --INDENTATION MONAD --
 
-type IndentationType = String
-type Indentation = (Int, IndentationType,String)
-type IndentMonad = Reader Indentation
-
 instance Show FCType where
   show Int = "i32"
   show Bool = "i1"
   show String = "i8*"
   show Void = "void"
-
-runIndentMonad :: IndentMonad a -> Int -> IndentationType -> a
-runIndentMonad a n s =
-  runReader a (n, s, s')
-  where
-    s' = foldl (\rest _ -> s ++ rest) "" [1..n]
-
-addIndentation :: IndentMonad a -> IndentMonad a
-addIndentation = local (\(n, s, s') -> (n, s, _indentFun n s ++ s'))
-    where
-      _indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
-
-indent :: String -> IndentMonad String
-indent s = do
-  (_, _, c') <- ask
-  return $ c' ++ s
 
 instance Show FCBinaryOperator where
   show x =
@@ -243,41 +232,111 @@ instance Show FCRValue where
     Neg -> "sub " ++ show ftype ++ " 0, " ++ show r1 ++ s
     BoolNeg -> error "Instancja Show dla FCRValue(BoolNeg) niezdefiniowana"
     -- show fuop ++
+  showsPrec _ (FCPhi _ []) s = error "Malformed (empty) PHI"
+  showsPrec _ (FCPhi x list) s = "phi " ++ show x ++ " " ++
+    foldr (\(rvalue, rfrom) rest -> showPhiArg rvalue rfrom ++
+              if null rest then ""
+               else ", ") "" list ++ s
+    where
+      showPhiArg :: FCRegister -> FCRegister -> String
+      showPhiArg rval rfrom = "[" ++ show rval ++", " ++ show rfrom ++ "]"
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
-class ShowWithIndent a where
-  showIndent :: a -> IndentMonad String
-  showsIndent :: a -> String -> IndentMonad String
-  showIndent = flip showsIndent ""
+    -- PRINT MONAD
 
-instance ShowWithIndent FCInstr where
-  showsIndent (reg, rval@(Return _ _)) rest = indent (show rval ++ rest)
-  showsIndent (reg, instr) rest = indent (show reg ++ " = " ++ show instr ++ rest)
-  showIndent x = showsIndent x ""
+type StringBuilder = State [String]
+type IndentMonad = ReaderT AltIndentation StringBuilder ()
+type AltIndentation = (String, String)
 
-instance ShowWithIndent FCBlock where
-  showsIndent (FCSimpleBlock _ linstr) rest =
-    Data.Foldable.foldrM (\instr s -> showsIndent instr ("\n" ++ s)) rest linstr
-  showsIndent (FCComplexBlock _ lblocks) rest =
-    Data.Foldable.foldrM (\instr s -> showsIndent instr ("\n" ++ s)) rest lblocks
-  showsIndent _ rest = error ""
+pmPutLine :: String -> IndentMonad
+pmPutLine s = do
+  (_, cind) <- ask
+  hist <- get
+  put $ "\n":s:cind:hist
+pmPutString :: String -> IndentMonad
+pmPutString s = do
+  (_, cind) <- ask
+  hist <- get
+  put $ s:cind:hist
+pmNewLine :: IndentMonad
+pmNewLine = modify ("\n":)
+withIndent :: IndentMonad -> IndentMonad
+withIndent f = (\(indent, oldIndent) -> (indent, indent ++ oldIndent)) `local` f
 
-instance ShowWithIndent FCFun where
-  showsIndent (FCFun name rt args body) s = do
-    (length, ident, current) <- ask
-    sbody <- addIndentation $ showsIndent body ("}" ++ s)
-    indent $ "define " ++ show rt ++ " @" ++ name ++
-      "(" ++ showArgs args ++ ") {\n" ++ sbody
-      where
-        showArgs :: [(FCType, FCRegister)] -> String
-        showArgs = foldr (\(ftype, freg) s -> show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
-  showIndent = flip showsIndent ""
+buildIndentMonad :: String -> Int -> Int -> IndentMonad -> String
+buildIndentMonad indentType len init monad =
+  let
+    indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
+    indent = indentFun len indentType
+    initIndent = indentFun init indent
+    list = execState (runReaderT monad (indent, initIndent)) []
+  in
+    concat (reverse list)
 
-instance ShowWithIndent FCProg where
-  showsIndent (FCProg list) s =
-    do
-      foldr (\a x -> do
-                str <- x
-                showsIndent a ("\n" ++ str)) (return s) list
-  showIndent = flip showsIndent ""
+printIndentMonad :: String -> Int -> Int -> IndentMonad -> IO ()
+printIndentMonad indentType len init monad =
+  let
+    indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
+    indent = indentFun len indentType
+    initIndent = indentFun init indent
+    list = execState (runReaderT monad (indent, initIndent)) []
+  in
+    mapM_ putStr (reverse list)
 
+
+printFCInstr :: FCInstr -> IndentMonad
+printFCInstr (reg, instr) = do
+  pmPutLine $ showedReg ++ show instr
+  where
+    showedReg = case reg of
+      VoidReg -> ""
+      reg -> show reg ++ " = "
+
+showFCLabel :: String -> String
+showFCLabel x = "label %" ++ x
+
+printFCBlock :: FCBlock -> IndentMonad
+printFCBlock (FCNamedSBlock name instr) = do
+  unless (null name) (pmPutLine $ name ++ ":")
+  mapM_ printFCInstr instr
+printFCBlock (FCComplexBlock name blocks) = do
+  unless (null name) (pmPutLine $ name ++ ":")
+  mapM_ printFCBlock blocks
+printFCBlock fcblock@FCCondBlock {} = do
+  printFCBlock (condEval fcblock)
+  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
+    ++ showBlockLabel failureBlock
+  printFCBlock successBlock
+  printFCBlock failureBlock
+  printFCBlock (post fcblock)
+  where
+    successBlock = success fcblock
+    failureBlock = failure fcblock
+    showBlockLabel = showFCLabel . bname
+printFCBlock fcblock@FCPartialCond{} = do
+  printFCBlock (condEval fcblock)
+  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
+    ++ showBlockLabel failureBlock
+  printFCBlock successBlock
+  printFCBlock failureBlock
+    where
+    successBlock = success fcblock
+    failureBlock = failure fcblock
+    showBlockLabel = showFCLabel . bname
+
+
+printFCFun :: FCFun -> IndentMonad
+printFCFun (FCFun name rt args body) = do
+  pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"
+  withIndent $ printFCBlock body
+  pmPutLine "}"
+  where
+    showArgs :: [(FCType, FCRegister)] -> String
+    showArgs = foldr (\(ftype, freg) s ->
+                        show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
+
+
+showFCProg :: FCProg -> IndentMonad
+showFCProg (FCProg list) = do
+  pmNewLine
+  mapM_ (\fun -> printFCFun fun >> pmNewLine) list

@@ -33,6 +33,8 @@ import qualified VariableEnvironment as VE
 import qualified IDefinition as IDef
 import Data.Foldable (foldlM)
 import qualified VariableEnvironment as VC
+import DynFlags (ContainsDynFlags)
+import qualified Control.Arrow as BiFunctor
 
 type FCVarEnv = VarEnv String FCRegister
 
@@ -56,16 +58,28 @@ bbaddBlock block bb = BB []
   (block:(
       case instrAcc bb of
         [] -> blockAcc bb
-        instrs -> FCSimpleBlock "" (reverse instrs): blockAcc bb))
+        instrs -> FCNamedSBlock "" (reverse instrs): blockAcc bb))
 bbaddInstr :: FCInstr -> BlockBuilder -> BlockBuilder
 bbaddInstr instr bb = BB (instr:instrAcc bb) (blockAcc bb)
-bbBuild :: BlockBuilder -> FCBlock
-bbBuild bb = FCComplexBlock
+bbBuildAnonymous :: BlockBuilder -> FCBlock
+bbBuildAnonymous bb = FCComplexBlock
   ""
   (reverse $
     case instrAcc bb of
       [] -> blockAcc bb
-      intrs -> FCSimpleBlock "" (reverse intrs):blockAcc bb)
+      intrs -> FCNamedSBlock "" (reverse intrs):blockAcc bb)
+bbBuildNamed :: BlockBuilder -> String  -> FCBlock
+bbBuildNamed bb name = let
+  instrs = instrAcc bb
+  blocks = blockAcc bb
+  in
+  case (instrs, blocks) of
+    ([], []) -> FCComplexBlock name []
+    ([], [block]) -> case block of
+      (FCNamedSBlock " "fcabi) -> FCNamedSBlock name fcabi
+      _ -> FCComplexBlock name [block]
+    ([], blocks) -> FCComplexBlock name (reverse blocks)
+    (instrs, blocks) -> FCComplexBlock name (reverse $ FCNamedSBlock "" (reverse instrs):blocks)
 bbNew :: BlockBuilder
 bbNew = BB [] []
 
@@ -82,54 +96,57 @@ fccPutConstants c' (FCC ve re c b) = FCC ve re c' b
 fccPutBlocksCounts fbc' (FCC ve re c fbc) = FCC ve re c fbc'
 
 
--- translateAndExpr :: Tr.IExpr -> Bool -> FCCompiler (FCType, FCRegister )
--- translateAndExpr (Tr.IAnd (ie:ies)) _ =
---   error "TranslateAndExpr: unimplemented"
---   where
---     _nextBlockName :: BlockType -> FCCompiler String
---     _nextBlockName blockType = do
---       x <- head . blocks <$> get
---       return $ nextBlockName x blockType
---     g :: Tr.IExpr -> [Tr.IExpr] -> FCCompiler (FCType, FCRegister)
---     g ie rest = do
---       openBlock BoolExp
+translateAndExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
+translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
+  g bn bb ie ies
+  where
+    g :: String-> BlockBuilder ->Tr.IExpr -> [Tr.IExpr] -> FCCompiler (BlockBuilder, (FCType, FCRegister))
+    g bname bb ie rest = do
+      withOpenBlock bname BoolExp $ \bname -> do
 
---       postEt <- _nextBlockName Post
---       failureEt <- _nextBlockName Failure
---       successEt <- _nextBlockName Success
+        blocks <- gets fccBlocksCounts
 
---       openBlock Normal
---       (ftype, c) <- translateExpr ie True
---       closeBlock
+        let block = if null blocks then undefined else head blocks
+            failureEt = nextBlockName bname block Failure
+            postEt = nextBlockName bname block Post
 
---       openBlock Success
---       (r1, successEt) <- f rest failureEt
---       closeBlock
+        (cb, (_, jreg)) <- withOpenBlock bname Check $ \bname ->
+          BiFunctor.first bbBuildAnonymous <$> translateExpr bname bbNew  ie True
 
---       openBlock Failure
---       prependFCRValue undefined (jump (Et postEt))
---       closeBlock
+        (sb, sreg, sbn) <- withOpenBlock bname Success $
+          \bname -> f bname bbNew ies (failureEt, postEt)
 
---       openBlock Post
---       res <- prependFCRValue RPhi (FCPhi [(r1, Et successEt), (LitBool False, Et failureEt)])
---       closeBlock
+        (fb, (_, _)) <- withOpenBlock bname Failure $ \bname -> do
+          return (bbBuildNamed (bbaddInstr (VoidReg , jump failureEt) bbNew) bname,
+                  (Void, VoidReg))
 
---       closeBlock
---       return (Void, undefined)
---     f :: [Tr.IExpr] -> String -> FCCompiler (FCRegister, String)
---     f [ie] _ = do
---       openBlock Normal
---       name <- getBlockName
---       (_, r) <- translateExpr ie True 
---       closeBlock
---       return (r, name)
---     f (ie1:rest) s = do
---       openBlock BoolExp
---       -- Really the same
---       closeBlock
---       undefined
---     f _ _ = error "translateAndExpr.f impossible fallthrough"
+        (pb, res) <- withOpenBlock bname Post $ \bname -> do
+          let x = FCPhi [(sreg, Et sbn), (LitBool False, Et failureEt)]
+          (x, r)<- emplaceFCRValue RNormal x bbNew
+          return (bbBuildNamed x bname, r)
 
+        let returnBlock = FCCondBlock bname cb jreg sb fb pb
+        return (bbaddBlock returnBlock bb, (Bool, res))
+
+    f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister, String)
+    f bn bb [ie] (_, postEt) = do
+      withOpenBlock bn Normal $ \bname -> do
+        (cbb, (ftype, reg)) <- translateExpr bname bbNew  ie True -- Można zmienić na BIFunctor
+        return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg, bname)
+    f bn bb (ie:rest) (failureEt, postEt) = do
+
+        (cb, (_, jreg)) <- withOpenBlock bn Check $ \bname ->
+          (bbBuildAnonymous `BiFunctor.first`) <$> translateExpr bname bbNew  ie True
+
+        (sb, r, bn') <- withOpenBlock bn BoolExp $ \bname -> do
+          f bname bbNew rest (failureEt, postEt)
+
+        (fb, (_, _)) <- withOpenBlock bn Failure $ \bname -> do
+          return (bbBuildNamed (bbaddInstr (VoidReg , jump failureEt) bbNew) bname, (Void, VoidReg))
+
+        let returnBlock = FCPartialCond bn cb jreg sb fb
+
+        return (returnBlock, r, bn')
 
 
 translateExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
@@ -166,9 +183,8 @@ translateExpr bname bb ie save =
 --       -- Tr.INot ie -> do
 --       --   reg <- translateExpr ie True
 --       --   prependFCRValue RNormal $ FCUnOp BoolNeg reg
---       -- Tr.IAnd ie ie' -> do
---       --   r2 <- translateExpr ie' True
---       --   r1 <- translateExpr ie True
+      (Tr.IAnd _) -> do
+        translateAndExpr bname bb ie True
 --       --   prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
 --       -- Tr.IOr ie ie' -> do
 --       --   r2 <- translateExpr ie' True
@@ -306,7 +322,7 @@ translateFun (Tr.IFun s lt lts ib) = do
   withOpenFunBlock s lt lts $ \res ->
     do
       fbody <- translateBlock s ib bbNew
-      return $ FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild fbody}
+      return $ FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuildAnonymous fbody}
 
 -- translateFunTest :: Tr.IFun -> FCCompiler FCFun
 -- translateFunTest (Tr.IFun s lt lts ib) = do
@@ -315,7 +331,7 @@ translateFun (Tr.IFun s lt lts ib) = do
 --         x <- mapM (getVar . fst) lts
 --         return FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuild bbNew}
 --     )
-    
+
 translateProg :: [Tr.IFun] -> FCCompiler FCProg
 translateProg list = do
   fbodies <- mapM
@@ -515,24 +531,36 @@ withOpenFunBlock s rt slts f = do
   closeFunBlock
   return result
 
--- nextBlockName :: String -> Int -> BlockType -> String
--- nextBlockName blockname x bt =
---   let
---   btSuf = case bt of
---     Normal -> ""
---     BoolExp -> (show x) ++ "B"
---     Cond -> (show x) ++ "I"
---     While -> (show x) ++ "W"
---     Check -> "C"
---     Success -> "S"
---     Failure -> "F"
---     Post -> "P"
---     _ -> error "nextBlockName: PartialFunction"
---   btNum = case block of
---     BlockState s n i x0 fbs -> show i
---     _ -> ""
---   in
---     blockName block ++ "btNum" ++ btSuf
+
+nextBlockName :: String -> Int ->BlockType -> String
+nextBlockName blockname x bt =
+  let
+  btSuf = case bt of
+    Normal -> ""
+    BoolExp -> (show x) ++ "B"
+    Cond -> (show x) ++ "I"
+    While -> (show x) ++ "W"
+    Check -> "C"
+    Success -> "S"
+    Failure -> "F"
+    Post -> "P"
+    _ -> error "nextBlockName: PartialFunction"
+  in
+    blockname ++ btSuf
+
+-- getnextBlockNameM :: String -> BlockType -> FCCompiler String
+-- getnextBlockNameM s bt = do
+--   blocks <- gets fccBlocksCounts
+--   when (null blocks) (error "Somehow blocks are malformed")
+--   modify (fccPutBlocksCounts (1 + head blocks : tail blocks))
+--   return $ nextBlockName s (head blocks) bt
+--   where
+--     increaseCounter = case bt of
+--       BoolExp -> True
+--       Cond -> True
+--       While -> True
+--       _ -> False
+
 
 openBlock :: BlockType -> FCCompiler ()
 openBlock bt = do
@@ -542,9 +570,9 @@ openBlock bt = do
       fccbc' =case bt of
         FunBody -> error "OpenBlock FunBody"
         Normal -> fccbc
-        -- BoolExp -> (1 + head fccbc):tail fccbc
-        -- Cond -> (1 + head fccbc):tail fccbc
-        -- While -> (1 + head fccbc):tail fccbc
+        BoolExp -> (1 + head fccbc):tail fccbc
+        Cond -> (1 + head fccbc):tail fccbc
+        While -> (1 + head fccbc):tail fccbc
         Check -> 0:fccbc
         Success -> 0:fccbc
         Failure -> 0:fccbc
@@ -563,17 +591,19 @@ closeBlock bt = do
         BoolExp -> bc
         Cond -> bc
         While -> bc
-        -- Check -> tail bc
-        -- Success -> tail bc
-        -- Failure -> tail bc
-        -- Post -> tail bc
+        Check -> tail bc
+        Success -> tail bc
+        Failure -> tail bc
+        Post -> tail bc
         BTPlacceHolder -> error "OpenBlock PlaceHolder"
   modify (fccPutVenv ve' . fccPutBlocksCounts bc')
 
 withOpenBlock :: String -> BlockType -> (String -> FCCompiler a )-> FCCompiler a
 withOpenBlock bname bt f = do
+  blocks <- gets fccBlocksCounts
   openBlock bt
-  res <- f bname
+  let bname' = nextBlockName bname (head blocks) bt
+  res <- f bname'
   closeBlock bt
   return res
 

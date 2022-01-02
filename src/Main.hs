@@ -19,7 +19,7 @@ import System.Exit
 
 import qualified IDefinition as IDef
 import FCCompiler(compileProg)
-import FCCompilerTypes(ShowWithIndent(..), runIndentMonad)
+import FCCompilerTypes(showFCProg, buildIndentMonad)
 
 import qualified Latte.Abs as Lt
     (
@@ -43,8 +43,9 @@ type ParseFun a = [Token] -> Err a
 compile :: Lt.Program -> CompilerExcept String
 compile program =
   do
-    iprogram <- (programToInternal . IDef.preprocessProgram)  program
-    return $ runIndentMonad (showIndent (compileProg iprogram)) 4 " "
+    iprogram <- (programToInternal . IDef.preprocessProgram) program
+    return $ buildIndentMonad " " 4 0 (showFCProg (compileProg iprogram))
+    
 
 argumentError = 1
 grammarError = 2

@@ -234,12 +234,18 @@ instance Show FCRValue where
     -- show fuop ++
   showsPrec _ (FCPhi _ []) s = error "Malformed (empty) PHI"
   showsPrec _ (FCPhi x list) s = "phi " ++ show x ++ " " ++
-    foldr (\(rvalue, rfrom) rest -> showPhiArg rvalue rfrom ++
-              if null rest then ""
-               else ", ") "" list ++ s
+    foldr (\(rvalue, rfrom) rest ->
+             showPhiArg rvalue rfrom ++ (if null rest then "" else ", ")
+             ++ rest)
+    ""
+    list
+    ++ s
     where
       showPhiArg :: FCRegister -> FCRegister -> String
       showPhiArg rval rfrom = "[" ++ show rval ++", " ++ show rfrom ++ "]"
+  showsPrec _ (FCJump register) s = "br label" ++ show register ++ s
+  showsPrec _ (FCCondJump c1 s f) str = "br i8 " ++ show c1 ++ ", label "
+    ++ show s ++ ", label " ++ show f ++ str
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
     -- PRINT MONAD

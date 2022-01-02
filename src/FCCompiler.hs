@@ -121,9 +121,10 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
                   (Void, VoidReg))
 
         (pb, res) <- withOpenBlock bname Post $ \bname -> do
-          let x = FCPhi [(sreg, Et sbn), (LitBool False, Et failureEt)]
-          (x, r)<- emplaceFCRValue RNormal x bbNew
-          return (bbBuildNamed x bname, r)
+          rtype <- getRegisterType sreg
+          let phi = FCPhi rtype [(sreg, Et sbn), (LitBool False, Et failureEt)]
+          (bb', r)<- emplaceFCRValue RNormal phi bbNew
+          return (bbBuildNamed bb' bname, r)
 
         let returnBlock = FCCondBlock bname cb jreg sb fb pb
         return (bbaddBlock returnBlock bb, (Bool, res))
@@ -633,6 +634,13 @@ getBlockName = error "GetBlockName: undefined case"
   --     (WhileBlockState name _ _ _ _ _):rest -> name
       -- _ -> error "GetBlockName: undefined case"
 
+getRegisterType :: FCRegister -- ^ 
+  -> FCCompiler FCType
+getRegisterType r = do
+   rtype <- gets (_lookupRegister r . fccRegEnv)
+   return $ case rtype of
+             Just rtype -> (fCRValueType rtype)
+             _ -> error "Could not find type of register"
 getVar :: String -> FCCompiler (FCType, FCRegister)
 getVar var = do
   mvalue <- gets (VE.lookupVar var . fccVenv)

@@ -166,12 +166,12 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
         (cb, (_, jreg)) <- withOpenBlock bname Check $ \bname ->
           BiFunctor.first bbBuildAnonymous <$> translateExpr bname bbNew  ie True
 
-        (sb, sreg, sbn) <- withOpenBlock bname Failure $
-          \bname -> f bname bbNew ies (successEt, postEt)
-
-        (fb, (_, _)) <- withOpenBlock bname Success $ \bname -> do
+        (sb, (_, _)) <- withOpenBlock bname Success $ \bname -> do
           return (bbBuildNamed (bbaddInstr (VoidReg , jump postEt) bbNew) bname,
                   (Void, VoidReg))
+
+        (fb, sreg, sbn) <- withOpenBlock bname Failure $
+          \bname -> f bname bbNew ies (successEt, postEt)
 
         (pb, res) <- withOpenBlock bname Post $ \bname -> do
           rtype <- getRegisterType sreg

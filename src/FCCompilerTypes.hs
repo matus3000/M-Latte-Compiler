@@ -243,7 +243,7 @@ instance Show FCRValue where
     where
       showPhiArg :: FCRegister -> FCRegister -> String
       showPhiArg rval rfrom = "[" ++ show rval ++", " ++ show rfrom ++ "]"
-  showsPrec _ (FCJump register) s = "br label" ++ show register ++ s
+  showsPrec _ (FCJump register) s = "br label " ++ show register ++ s
   showsPrec _ (FCCondJump c1 s f) str = "br i8 " ++ show c1 ++ ", label "
     ++ show s ++ ", label " ++ show f ++ str
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
@@ -309,6 +309,7 @@ printFCBlock (FCComplexBlock name blocks) = do
   unless (null name) (pmPutLine $ name ++ ":")
   mapM_ printFCBlock blocks
 printFCBlock fcblock@FCCondBlock {} = do
+  pmPutLine $ ":" ++ bname fcblock
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
     ++ showBlockLabel failureBlock
@@ -320,6 +321,7 @@ printFCBlock fcblock@FCCondBlock {} = do
     failureBlock = failure fcblock
     showBlockLabel = showFCLabel . bname
 printFCBlock fcblock@FCPartialCond{} = do
+  pmPutLine $ ":" ++ bname fcblock
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
     ++ showBlockLabel failureBlock

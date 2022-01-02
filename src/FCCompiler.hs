@@ -279,30 +279,33 @@ translateInstr name bb stmt = case stmt of
     (bb', (ft, r)) <- translateExpr' bb ie True
     return $ bbaddInstr (VoidReg, Return ft (Just r)) bb'
   Tr.IVRet -> return $ bbaddInstr (VoidReg, Return Void Nothing) bb
---   -- Tr.ICond ie iblock (Tr.MD md) -> do
---   --   let ascmd = DS.toAscList md
---   --   parname <- getBlockName
---   --   openBlock Cond
+  Tr.ICond ie iblock (Tr.MD md) ->
+    withOpenBlock name Cond $ \name -> do
+    let ascmd = DS.toAscList md
+        postEtStr = ""
+        successEt = Et ""
+        failureEt = Et ""
 
+    oldVals <- mapM getVar ascmd
 
---   --   oldVal <- mapM getVar ascmd
---   --   openBlock Check
---   --   r <- translateExpr ie True
---   --   closeBlock
+    (cb, jr) <- withOpenBlock name Check $ (\name -> (do
+                                                         (bb, (_, reg)) <- translateExpr name bbNew ie True
+                                                         return (bbBuildNamed bb name , reg)))
 
---   --   openBlock Success
---   --   protectVariablesCond ascmd
---   --   sname <- getBlockName
---   --   translateBlock iblock
---   --   smd <- mapM getVar ascmd
---   --   endprotection
---   --   closeBlock
+    (newVals, sb) <- withOpenBlock name Success $ (\name ->
+                                                     withProtectedVars ascmd $ do
+                                                      sbb <- translateBlock name iblock bbNew
+                                                      newVal <- mapM getVar ascmd
+                                                      return (newVal, bbBuildNamed sbb name))
 
---   --   openBlock Post
---   --   phi ascmd (parname, oldVal) (sname, smd)
---   --   closeBlock
+    fb <- withOpenBlock name Failure $ (\name -> do
+                                           return $ bbBuildNamed (bbaddInstr (VoidReg, jump postEtStr) bbNew) name)
+        
+    pb <- withOpenBlock name Post $ \name -> (do
+                                                 pbb <- phi (zip ascmd (zip newVals oldVals)) successEt failureEt
+                                                 return (bbBuildNamed pbb name))
 
---   --   closeBlock
+    return $ bbaddBlock (FCCondBlock name cb jr sb fb pb) bb
 --   -- Tr.ICondElse ie ib ib' (Tr.MD md) -> do
 --   --   let ascmd = DS.toAscList md
 --   --   openBlock Cond
@@ -363,6 +366,13 @@ translateInstr name bb stmt = case stmt of
     translateIItem' = flip $ translateIItem name
     translateExpr' = translateExpr name
     translateInstr' = translateInstr name bb
+    phi :: [(String,((FCType, FCRegister),(FCType, FCRegister)))] -> FCRegister -> FCRegister -> FCCompiler BlockBuilder
+    phi list successEt failureEt = foldlM (\bb (var, ((st, sval),(ft, fval))) ->
+                         do
+                           (bb, r) <- emplaceFCRValue
+                                      RPhi (FCPhi ft [(sval, successEt), (fval, failureEt)]) bb
+                           setVar var r
+                           return bb) bbNew list
 
 translateBlock :: String -> Tr.IBlock -> BlockBuilder -> FCCompiler BlockBuilder
 translateBlock blockName (Tr.IBlock stmts) rest =
@@ -658,9 +668,8 @@ withOpenBlock bname bt f = do
   closeBlock bt
   return res
 
-
-protectVariablesCond :: [String] -> FCCompiler ()
-protectVariablesCond vars = do
+protectVariables :: [String] -> FCCompiler ()
+protectVariables vars = do
   ve <- fccVenv <$> get
   let ve' = foldl (\ve var ->
                    case VE.lookupVar var ve of
@@ -670,9 +679,17 @@ protectVariablesCond vars = do
   modify (fccPutVenv ve')
 protectVariablesWhile :: [String] -> FCCompiler ()
 protectVariablesWhile = error "protectVariablesWhile: undefined"
+
 endprotection :: FCCompiler ()
 endprotection = do
   modify (\fcc -> fccPutVenv (VE.closeClosure $ fccVenv fcc) fcc)
+
+withProtectedVars :: [String] -> FCCompiler a -> FCCompiler a
+withProtectedVars vars f = do
+  protectVariables vars
+  res <- f
+  endprotection
+  return res
 
 getBlockName :: FCCompiler String
 getBlockName = error "GetBlockName: undefined case"

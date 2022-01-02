@@ -117,7 +117,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
           \bname -> f bname bbNew ies (failureEt, postEt)
 
         (fb, (_, _)) <- withOpenBlock bname Failure $ \bname -> do
-          return (bbBuildNamed (bbaddInstr (VoidReg , jump failureEt) bbNew) bname,
+          return (bbBuildNamed (bbaddInstr (VoidReg , jump postEt) bbNew) bname,
                   (Void, VoidReg))
 
         (pb, res) <- withOpenBlock bname Post $ \bname -> do
@@ -148,6 +148,59 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
         let returnBlock = FCPartialCond bn cb jreg sb fb
 
         return (returnBlock, r, bn')
+translateOrExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool
+  -> FCCompiler (BlockBuilder, (FCType, FCRegister))
+translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
+  g bn bb ie ies
+  where
+    g :: String-> BlockBuilder ->Tr.IExpr -> [Tr.IExpr] -> FCCompiler (BlockBuilder, (FCType, FCRegister))
+    g bname bb ie rest = do
+      withOpenBlock bname BoolExp $ \bname -> do
+
+        blocks <- gets fccBlocksCounts
+
+        let block = if null blocks then undefined else head blocks
+            successEt = nextBlockName bname block Success
+            postEt = nextBlockName bname block Post
+
+        (cb, (_, jreg)) <- withOpenBlock bname Check $ \bname ->
+          BiFunctor.first bbBuildAnonymous <$> translateExpr bname bbNew  ie True
+
+        (sb, sreg, sbn) <- withOpenBlock bname Failure $
+          \bname -> f bname bbNew ies (successEt, postEt)
+
+        (fb, (_, _)) <- withOpenBlock bname Success $ \bname -> do
+          return (bbBuildNamed (bbaddInstr (VoidReg , jump postEt) bbNew) bname,
+                  (Void, VoidReg))
+
+        (pb, res) <- withOpenBlock bname Post $ \bname -> do
+          rtype <- getRegisterType sreg
+          let phi = FCPhi rtype [(sreg, Et sbn), (LitBool True, Et successEt)]
+          (bb', r)<- emplaceFCRValue RNormal phi bbNew
+          return (bbBuildNamed bb' bname, r)
+
+        let returnBlock = FCCondBlock bname cb jreg sb fb pb
+        return (bbaddBlock returnBlock bb, (Bool, res))
+
+    f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister, String)
+    f bn bb [ie] (_, postEt) = do
+      withOpenBlock bn Normal $ \bname -> do
+        (cbb, (ftype, reg)) <- translateExpr bname bbNew  ie True -- Można zmienić na BIFunctor
+        return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg, bname)
+    f bn bb (ie:rest) (successEt, postEt) = do
+
+        (cb, (_, jreg)) <- withOpenBlock bn Check $ \bname ->
+          (bbBuildAnonymous `BiFunctor.first`) <$> translateExpr bname bbNew  ie True
+
+        (sb, (_, _)) <- withOpenBlock bn Success $ \bname -> do
+          return (bbBuildNamed (bbaddInstr (VoidReg , jump successEt) bbNew) bname, (Void, VoidReg))
+
+        (fb, r, bn') <- withOpenBlock bn BoolExp $ \bname -> do
+          f bname bbNew rest (successEt, postEt)
+
+        let returnBlock = FCPartialCond bn cb jreg sb fb
+
+        return (returnBlock, r, bn')
 
 
 translateExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
@@ -171,9 +224,9 @@ translateExpr bname bb ie save =
     case ie of
       Tr.ILitInt n -> return  (bb, (Int , LitInt $ fromInteger n))
       Tr.ILitBool b -> return (bb, (Bool, LitBool b))
---       -- Tr.IString s -> do
---       --   constEt <- getConstStringEt s
---       --   prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
+       -- Tr.IString s -> do
+       --   constEt <- getConstStringEt s
+       --   prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
       Tr.IVar s -> (bb, ) <$> getVar s
       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr bb save
       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr bb save
@@ -181,25 +234,22 @@ translateExpr bname bb ie save =
         (bb', (ftype, reg)) <- translateExpr' bb ie True
         (bb'', reg') <- emplaceFCRValue RNormal (FCUnOp ftype Neg reg) bb'
         return (bb'', (ftype, reg'))
---       -- Tr.INot ie -> do
---       --   reg <- translateExpr ie True
---       --   prependFCRValue RNormal $ FCUnOp BoolNeg reg
-      (Tr.IAnd _) -> do
+       -- Tr.INot ie -> do
+       --   reg <- translateExpr ie True
+       --   prependFCRValue RNormal $ FCUnOp BoolNeg reg
+      Tr.IAnd _ -> do
         translateAndExpr bname bb ie True
---       --   prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
---       -- Tr.IOr ie ie' -> do
---       --   r2 <- translateExpr ie' True
---       --   r1 <- translateExpr ie True
---       --   prependFCRValue RNormal $ FCBinOp BoolAnd  r1 r2
---       -- Tr.IApp fun ies -> let
---       --   r ::  Bool -> Bool -> FCCompiler FCRegister
---       --   r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
---       --     do
---       --       args <- mapM (`translateExpr` True) (reverse ies)
---       --       prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
---       --         FunCall fun args
---       --   in
---       --   isFunStatic fun >>= r True
+      Tr.IOr _ -> do
+        translateOrExpr bname bb ie True
+       -- Tr.IApp fun ies -> let
+       --   r ::  Bool -> Bool -> FCCompiler FCRegister
+       --   r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
+       --     do
+       --       args <- mapM (`translateExpr` True) (reverse ies)
+       --       prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
+       --         FunCall fun args
+       --   in
+       --   isFunStatic fun >>= r True
       Tr.IRel iro ie ie' -> do
         (bb', (ftype1, r1)) <- translateExpr' bb ie True
         (bb'', (ftype2, r2)) <- translateExpr' bb' ie' True

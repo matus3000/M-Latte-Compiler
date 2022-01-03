@@ -7,6 +7,7 @@
 -- TO DO:
 -- a) Zamienić mapM getVar foldable na getVars
 -- b) Sprawić, żeby return nie otrzymawało normalnego rejestru, tylko rejestr typu void.
+-- c) Zmienić COND na CONDElse gdzie jedynyną instrukcją jest instrukcja pusta. W Translator.hs
 module FCCompiler where
 
 import Prelude
@@ -23,7 +24,6 @@ import FCCompilerTypes as FCT
 import qualified Translator as Tr
 import qualified Data.Functor
 import FCCompilerState (VariableEnvironment(..),
-                        LLRegisterState(..),
                         ConstantsEnvironment(..))
 import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi),
                         FCType(..),
@@ -36,16 +36,24 @@ import qualified VariableEnvironment as VC
 import DynFlags (ContainsDynFlags)
 import qualified Control.Arrow as BiFunctor
 
+
 type FCVarEnv = VarEnv String FCRegister
 
-data RegSt = RegSt { regMap :: DM.Map FCRegister FCRValue ,
-                     rvalueMap :: DM.Map FCRValue FCRegister,
-                     nextNormalId :: Int}
+data FCRegMap = FCRegMap {_regMap::VE.VarEnv FCRegister FCRValue,
+                          _rvalueMap:: VE.VarEnv FCRValue FCRegister}
 
-regStNew :: RegSt
-regStNew = RegSt {regMap = DM.empty ,
-                  rvalueMap=DM.empty,
-                  nextNormalId=0}
+type SSARegisterAllocator = Int
+
+ssaRegAllocNew :: SSARegisterAllocator
+ssaRegAllocNew = 0
+
+fcRegMapNew :: FCRegMap
+fcRegMapNew = FCRegMap (VE.openClosure VE.newVarEnv) (VE.openClosure VE.newVarEnv)
+
+-- regStNew :: RegSt
+-- regStNew = RegSt {regMap = DM.empty ,
+--                   rvalueMap=DM.empty,
+--                   nextNormalId=0}
 
 data CompileTimeConstants = CTC {constMap :: DM.Map String String,
                                  nextEtId :: Int}
@@ -84,16 +92,19 @@ bbNew :: BlockBuilder
 bbNew = BB [] []
 
 fccNew :: FCC
-fccNew = FCC newVarEnv regStNew ctcNew []
-data FCC = FCC {fccVenv::FCVarEnv, fccRegEnv::RegSt, fccConstants::CompileTimeConstants, fccBlocksCounts::[Int]}
+fccNew = FCC newVarEnv 0 fcRegMapNew ctcNew []
+data FCC = FCC {fccVenv::FCVarEnv, fccSSAAloc::SSARegisterAllocator,
+                fccRegMap::FCRegMap, fccConstants::CompileTimeConstants,
+                fccBlocksCounts::[Int]}
 type FCCompiler = State FCC
 fccPutVenv :: FCVarEnv -> FCC -> FCC
-fccPutVenv ve' (FCC ve re c b) = FCC ve' re c b
-fccPutRegenv :: RegSt -> FCC -> FCC
-fccPutRegenv re' (FCC ve re c b) = FCC ve re' c b
+fccPutVenv ve' (FCC ve ssa rm c b) = FCC ve' ssa rm c b
+fccPutRegMap :: FCRegMap -> FCC -> FCC
+fccPutRegMap re' (FCC ve ssa re c b) = FCC ve ssa re' c b
+fccPutSSAAloc ssa' (FCC ve ssa re c b) = FCC ve ssa' re c b 
 fccPutConstants :: CompileTimeConstants -> FCC -> FCC
-fccPutConstants c' (FCC ve re c b) = FCC ve re c' b
-fccPutBlocksCounts fbc' (FCC ve re c fbc) = FCC ve re c fbc'
+fccPutConstants c' (FCC ve ssa re c b) = FCC ve ssa re c' b
+fccPutBlocksCounts fbc' (FCC ve ssa re c fbc) = FCC ve ssa re c fbc'
 
 
 translateAndExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
@@ -123,7 +134,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
         (pb, res) <- withOpenBlock bname Post $ \bname -> do
           rtype <- getRegisterType sreg
           let phi = FCPhi rtype [(sreg, Et sbn), (LitBool False, Et failureEt)]
-          (bb', r)<- emplaceFCRValue RNormal phi bbNew
+          (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 
         let returnBlock = FCCondBlock bname cb jreg sb fb pb
@@ -176,7 +187,7 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
         (pb, res) <- withOpenBlock bname Post $ \bname -> do
           rtype <- getRegisterType sreg
           let phi = FCPhi rtype [(sreg, Et sbn), (LitBool True, Et successEt)]
-          (bb', r)<- emplaceFCRValue RNormal phi bbNew
+          (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 
         let returnBlock = FCCondBlock bname cb jreg sb fb pb
@@ -218,7 +229,7 @@ translateExpr bname bb ie save =
         do
           (bb', (t1, r1)) <- translateExpr bname bb ie1 True
           (bb'', (t2, r2)) <- translateExpr bname bb' ie2 True
-          (b''', r) <- emplaceFCRValue RNormal (FCBinOp t1 op r1 r2) bb''
+          (b''', r) <- emplaceFCRValue (FCBinOp t1 op r1 r2) bb''
           return (b''', (t1, r))
   in
     case ie of
@@ -232,7 +243,7 @@ translateExpr bname bb ie save =
       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr bb save
       Tr.INeg ie ->  do
         (bb', (ftype, reg)) <- translateExpr' bb ie True
-        (bb'', reg') <- emplaceFCRValue RNormal (FCUnOp ftype Neg reg) bb'
+        (bb'', reg') <- emplaceFCRValue (FCUnOp ftype Neg reg) bb'
         return (bb'', (ftype, reg'))
        -- Tr.INot ie -> do
        --   reg <- translateExpr ie True
@@ -253,7 +264,7 @@ translateExpr bname bb ie save =
       Tr.IRel iro ie ie' -> do
         (bb', (ftype1, r1)) <- translateExpr' bb ie True
         (bb'', (ftype2, r2)) <- translateExpr' bb' ie' True
-        (bb''', reg) <- emplaceFCRValue RNormal (FCBinOp ftype1 (convert iro) r1 r2) bb''
+        (bb''', reg) <- emplaceFCRValue (FCBinOp ftype1 (convert iro) r1 r2) bb''
         return (bb''', (Bool, reg))
       _ -> error "Unimplemented TR.Expr for TranslateExpr"
   where
@@ -281,87 +292,118 @@ translateInstr name bb stmt = case stmt of
   Tr.IVRet -> return $ bbaddInstr (VoidReg, Return Void Nothing) bb
   Tr.ICond ie iblock (Tr.MD md) ->
     withOpenBlock name Cond $ \name -> do
+
+    x <- getBlockCount
     let ascmd = DS.toAscList md
-        postEtStr = ""
-        successEt = Et ""
-        failureEt = Et ""
+        postEtStr = nextBlockName name x Post
+        successEt = Et $ nextBlockName name x Success
+        failureEt = Et $ nextBlockName name x Failure
 
     oldVals <- mapM getVar ascmd
 
     (cb, jr) <- withOpenBlock name Check $ (\name -> (do
                                                          (bb, (_, reg)) <- translateExpr name bbNew ie True
-                                                         return (bbBuildNamed bb name , reg)))
+                                                         return (bbBuildAnonymous bb, reg)))
 
     (newVals, sb) <- withOpenBlock name Success $ (\name ->
                                                      withProtectedVars ascmd $ do
                                                       sbb <- translateBlock name iblock bbNew
                                                       newVal <- mapM getVar ascmd
-                                                      return (newVal, bbBuildNamed sbb name))
+                                                      let sbb' = bbaddInstr (VoidReg, jump postEtStr) sbb
+                                                      return (newVal, bbBuildNamed sbb' name))
 
     fb <- withOpenBlock name Failure $ (\name -> do
                                            return $ bbBuildNamed (bbaddInstr (VoidReg, jump postEtStr) bbNew) name)
-        
+
     pb <- withOpenBlock name Post $ \name -> (do
                                                  pbb <- phi (zip ascmd (zip newVals oldVals)) successEt failureEt
                                                  return (bbBuildNamed pbb name))
 
     return $ bbaddBlock (FCCondBlock name cb jr sb fb pb) bb
---   -- Tr.ICondElse ie ib ib' (Tr.MD md) -> do
---   --   let ascmd = DS.toAscList md
---   --   openBlock Cond
+  Tr.ICondElse ie ib ib' (Tr.MD md) ->
+    withOpenBlock name Cond $ \name -> do
+    x <- getBlockCount
+    let ascmd = DS.toAscList md
+        postEtStr = nextBlockName name x Post
+        successEt = Et $ nextBlockName name x Success
+        failureEt = Et $ nextBlockName name x Failure
 
---   --   openBlock Check
---   --   r <- translateExpr ie True
---   --   closeBlock
 
---   --   openBlock Success
---   --   protectVariablesCond ascmd
---   --   sname <- getBlockName
---   --   translateBlock ib
---   --   smd <- mapM getVar ascmd
---   --   endprotection
---   --   closeBlock
+    (cb, jr) <- withOpenBlock name Check $ (\name -> (do
+                                                         (bb, (_, reg)) <- translateExpr name bbNew ie True
+                                                         return (bbBuildAnonymous bb, reg)))
 
---   --   openBlock Failure
---   --   protectVariablesCond ascmd
---   --   fname <- getBlockName
---   --   translateBlock ib'
---   --   fmd <- mapM getVar ascmd
---   --   endprotection
---   --   closeBlock
+    (sVals, sb) <- withOpenBlock name Success $ (\name ->
+                                                     withProtectedVars ascmd $ do
+                                                      sbb <- translateBlock name ib bbNew
+                                                      sVal <- mapM getVar ascmd
+                                                      let sbb' = bbaddInstr (VoidReg, jump postEtStr) sbb
+                                                      return (sVal, bbBuildNamed sbb' name))
 
---   --   openBlock Post
---   --   phi ascmd (sname, smd) (fname, fmd)
---   --   closeBlock
+    (fVals, fb) <- withOpenBlock name Failure $ (\name ->
+                                           withProtectedVars ascmd $ do
+                                           sbb <- translateBlock name ib' bbNew
+                                           fVals <- mapM getVar ascmd
+                                           let sbb' = bbaddInstr (VoidReg, jump postEtStr) sbb
+                                           return (fVals, bbBuildNamed sbb' name))
 
---   --   closeBlock
---   -- Tr.IWhile ie ib (Tr.MD md) -> do
---   --   let ascmd = DS.toAscList md
---   --   parName <- getBlockName
---   --   oldValues <- mapM getVar ascmd
+    pb <- withOpenBlock name Post $ \name -> (do
+                                                 pbb <- phi (zip ascmd (zip sVals fVals)) successEt failureEt
+                                                 return (bbBuildNamed pbb name))
+    return $ bbaddBlock (FCCondBlock name cb jr sb fb pb) bb
+  Tr.IWhile ie ib (Tr.MD md) -> withOpenBlock name While $ \wname -> do
+    x <- getBlockCount
+    let ascmd = DS.toAscList md
+        postEtStr = nextBlockName wname x Post
+        successEt = Et $ nextBlockName wname x Success
+        postpostEtStr = postEtStr ++ "E"
+    oldVals <- getVars ascmd
+    reg_ft <- preallocRegisters (zip ascmd (map fst oldVals))
 
---   --   openBlock While
 
---   --   openBlock Check
---   --   r <- translateExpr ie True
---   --   closeBlock
+    (cb, jr)<- withOpenBlock wname Check $ \name -> do
+      (bb, (_, reg)) <- translateExpr name bbNew ie True
+      return (bbBuildNamed bb name, reg)
 
---   --   openBlock Success
---   --   protectVariablesWhile ascmd
---   --   sname <- getBlockName
---   --   translateBlock ib
---   --   smd <- mapM getVar ascmd
---   --   endprotection
---   --   closeBlock
+    (sVals, sb) <- withOpenBlock wname Success $
+      \name ->
+        withProtectedVars ascmd $ do
+        sbb <- translateBlock name ib bbNew
+        sVal <- mapM getVar ascmd
+        let sbb' = bbaddInstr (VoidReg, jump postEtStr) sbb
+        return (sVal, bbBuildNamed sbb' name)
+        
+    pb <- withOpenBlock wname Post $ \name -> do
+      regenv <- gets fccRegMap
+      let x = zip reg_ft (zip oldVals sVals)
+          (regenv', bb) = foldl (\(regenv, bb) ((r, t), ((_, sr), (_, fr))) ->
+                                   let phiValue = FCPhi t [(sr, successEt), (fr, Et wname)]
+                                   in
+                                     (_putRegisterValue r phiValue regenv,
+                                     bbaddInstr (r, phiValue) bb))
+                          (regenv, bbNew) x
+      modify (fccPutRegMap regenv')
+      return (bbBuildNamed bb name)
+          
+      undefined
+    return undefined
+    where
+      preallocRegisters :: [(String, FCType)] -> FCCompiler [(FCRegister, FCType)]
+      preallocRegisters names = do
+        fcc <- get
+        let venv = fccVenv fcc
+            (ssaa', regmap', venv', list) = foldl
+              (\(ssaa, regmap, venv, list) (var, rtype) -> let
+                  (ssaa', r') = _nextRegister ssaa
+                  venv' = VE.setVar var r' venv
+                  regmap' = _setOnlyRegister r' (FCPhi rtype []) regmap
+                  in
+                  (ssaa', regmap', venv', (r', rtype):list)) (fccSSAAloc fcc, fccRegMap fcc, venv, []) names
+        modify (fccPutSSAAloc ssaa' . fccPutVenv venv . fccPutRegMap regmap')
+        return list
 
---   --   openBlock Post
---   --   phi ascmd (parName, oldValues) (sname, smd)
---   --   closeBlock
-
---   --   closeBlock
   Tr.ISExp ie -> fst <$> translateExpr' bb ie False
   Tr.IStmtEmpty -> return bb
-  _ -> error  "TranslateInstr: WIP"
   where
     translateIItem' = flip $ translateIItem name
     translateExpr' = translateExpr name
@@ -370,7 +412,7 @@ translateInstr name bb stmt = case stmt of
     phi list successEt failureEt = foldlM (\bb (var, ((st, sval),(ft, fval))) ->
                          do
                            (bb, r) <- emplaceFCRValue
-                                      RPhi (FCPhi ft [(sval, successEt), (fval, failureEt)]) bb
+                                      (FCPhi ft [(sval, successEt), (fval, failureEt)]) bb
                            setVar var r
                            return bb) bbNew list
 
@@ -409,14 +451,6 @@ compileProg ifun = let
   s
   where
     initialFcc = fccPutVenv (VE.openClosure $ fccVenv fccNew) fccNew
--- compileBlock :: Tr.IBlock -> CompilerExcept [FCBlock]
--- compileBlock = undefined
--- compileFun :: Tr.IFun -> CompilerExcept ()
--- compileFun = undefined
--- compileToFC :: [Tr.IFun] -> CompilerExcept ()
--- compileToFC = undefined
-
-
 -- putConstState :: ConstStringEnv -> FCC ()
 -- putConstState newEnv = modifyConstState (const newEnv)
 -- modifyConstState :: (ConstStringEnv -> ConstStringEnv) -> FCC ()
@@ -437,101 +471,39 @@ compileProg ifun = let
 
 -- lookupRegister :: FCRegister -> FCCompiler FCType
 
-_nextNormalRegister :: RegSt -> (RegSt, FCRegister)
-_nextNormalRegister (RegSt regMap rvalueMap nextNormalId) =
-  (RegSt regMap rvalueMap (nextNormalId + 1), Reg $ "R" ++ show nextNormalId)
-_putRegisterValue :: FCRegister -> FCRValue -> RegSt -> RegSt
-_putRegisterValue = undefined
-instance LLRegisterState RegSt where
-  _lookupRegister reg (RegSt regMap rvalueMap nextNormalIbd) = DM.lookup reg regMap
-  _normalizeFCRValue fcrValue (RegSt regMap rvalueMap nextNormalIbd) = fcrValue
-    -- case fcrValue of
-    --   original@(FCBinOp fbo fr fr') -> let norg = original in case fbo of
-    --     Add -> undefined
-    --     Sub -> original
-    --     Div -> undefined
-    --     Mul -> original
-    --     Mod -> original
-    --     LShift -> original
-    --     RShif -> original
-    --     ByteAnd -> original
-    --     ByteOr -> original
-    --     ByteXor -> original
-    --     BoolAnd -> original
-    --     BoolOr -> original
-    --     BoolXor -> original
-    --     Test -> undefined
-    --     Le -> original
-    --     Equ -> undefined
-    --     Neq -> undefined
-    --     Lth -> original
-    --     Gth -> original
-    --     Ge -> original
-    --   _ -> fcrValue
-  _mapFCRValue fcrValue regstate@(RegSt regMap rvalueMap nextNormalId) = case fcrValue `DM.lookup` rvalueMap of
+_nextRegister :: SSARegisterAllocator -> (SSARegisterAllocator, FCRegister)
+_nextRegister x = (x+1, Reg (show x))
+
+_setOnlyRegister :: FCRegister -> FCRValue -> FCRegMap ->  FCRegMap
+_setOnlyRegister reg val (FCRegMap rmap rvmap) = FCRegMap (VE.declareVar reg val rmap) rvmap
+_putRegisterValue :: FCRegister -> FCRValue -> FCRegMap -> FCRegMap
+_putRegisterValue reg val (FCRegMap rmap rvmap)  = FCRegMap (VE.declareVar reg val rmap) (VE.declareVar  val reg rvmap)
+_redeclareRegisterValue reg val (FCRegMap rmap rvmap) = FCRegMap (VE.setVar reg val rmap) (VE.setVar val reg rvmap)
+_lookupRValue :: FCRValue -> FCRegMap -> Maybe FCRegister
+_lookupRValue rval (FCRegMap _ rvalueMap) = VE.lookupVar rval rvalueMap
+_lookupRegister reg (FCRegMap rmap _) = VE.lookupVar reg rmap
+
+_mapFCRValue :: FCRValue -> SSARegisterAllocator -> FCRegMap -> ((SSARegisterAllocator, FCRegMap), Either FCRegister FCRegister )
+_mapFCRValue fcrValue ssa regmap = case fcrValue `_lookupRValue` regmap of
     Nothing -> let
-      fr = Reg $ "R" ++ show nextNormalId
-      regMap' = DM.insert fr fcrValue' regMap
-      rvalueMap' = DM.insert fcrValue' fr rvalueMap
+      (ssa', r) = _nextRegister ssa
+      regmap' = _putRegisterValue r fcrValue regmap
       in
-      (RegSt regMap' rvalueMap' (1 + nextNormalId), Right fr)
-    Just fr -> (regstate, Left fr)
-    where fcrValue' = _normalizeFCRValue fcrValue regstate
-  _mapFCRValueRegType _ fcr regst = _mapFCRValue fcr regst
+      ((ssa', regmap'), Right r)
+    Just r -> ((ssa, regmap), Left r)
 
 instance ConstantsEnvironment CompileTimeConstants String String where
   _getPointer str ctc@(CTC cmap next) = case DM.lookup str cmap of
       Just v -> (ctc, v)
       Nothing -> (CTC (DM.insert str ("C" ++ show next) cmap ) (next + 1), "C" ++ show next)
 
--- instance BlockBuilder BlockState FCInstr FCBlock where
---   _build (FunBlockState fname body) = case body of
---     Just x -> x
---     Nothing -> error "FunBlockState musi mieć syna"
---   _build (BlockState bn nbi 0 sl bl) = let
---     slBlock = FCSimpleBlock bn (reverse sl)
---     in
---     if null bl then slBlock else FCComplexBlock bn (reverse (slBlock:bl))
---   _build BlockState {} = error "Cannot build block which have an opened simple block."
---   -- _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) Nothing (Just postBlock) _) =
---   --   FCCondBlock conBlock successBlock postBlock
---   -- _build (CondBlockState bname _ (Just conBlock) _ (Just successBlock) (Just failureBlock) (Just postBlock) _) =
---   --   FCCondElseBlock conBlock successBlock failureBlock postBlock
---   -- _build CondBlockState{} = undefined
---   -- _build (WhileBlockState bname _ (Just cb) (Just s) (Just p) _) =
---   --   FCWhileBlock cb s p
---   -- _build WhileBlockState{} = undefined
---   _build _ = error "_build: WIP"
---   _prependStmt stmt block = case block of
---     BlockState s n i fis fbs -> BlockState s n i (stmt:fis) fbs
---     FunBlockState {} -> error "_prependStmt dla FunBlock"
---     _ -> error "Pojedyncze akcje powinny być prependowane jedynie do zwykłego bloku"
---   _prependBlock a block = case block of
---     BlockState s n i fci fbs -> BlockState s n i [] (a:FCSimpleBlock s fci:fbs)
---     CondBlockState s n m_fb m_fr ma m_fb' ma' bt -> error "_preprend CondBlockState: unimplemented"
---     WhileBlockState s n m_fb ma m_fb' bt -> error "_preprend WhileBlockState: unimplemented"
---     FunBlockState s m_fb -> case m_fb of
---       Just _ -> error "FunBlockState może posiadać tylko jedno dziecko"
---       Nothing -> FunBlockState s (Just a)
-
-
--- newSimpleBlock :: String -> Int -> BlockState
--- newSimpleBlock s n = BlockState s n 0 [] []
-
--- newCondBlockSt :: String -> BlockState
--- newCondBlockSt name = CondBlockState name 0 Nothing Nothing Nothing Nothing Nothing BTPlacceHolder
--- newWhileBlockSt :: String -> BlockState
--- newWhileBlockSt name = WhileBlockState name 0 Nothing Nothing Nothing BTPlacceHolder
-
--- isFunStatic :: String -> FCCompiler Bool
--- isFunStatic _ = return False
-
-emplaceFCRValue :: RegType -> FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
-emplaceFCRValue r rvalue bb = do
-  result <- _mapFCRValueRegType r rvalue . fccRegEnv <$> get
-  case snd result of
+emplaceFCRValue :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
+emplaceFCRValue rvalue bb = do
+  fcc <- get
+  let ((ssa,regmap), r) = _mapFCRValue rvalue (fccSSAAloc fcc) (fccRegMap fcc)
+  case r of
     Left r' -> return (bb, r')
-    Right r' -> modify (fccPutRegenv $ fst result) >> return (bbaddInstr (r', rvalue) bb, r')
+    Right r' -> modify (fccPutRegMap regmap . fccPutSSAAloc ssa) >> return (bbaddInstr (r', rvalue) bb, r')
 
 -- getConstStringEt :: String -> FCCompiler String
 -- getConstStringEt s = do
@@ -545,27 +517,28 @@ openFunBlock fname lret args =
     fcc <- get
     let
       blockStates = [0]
-      regst = fccRegEnv fcc
+      regst = fccRegMap fcc
+      ssa = fccSSAAloc fcc
       varenv = VC.openClosure $ fccVenv fcc
       len = length args
-      (rs, regst') = foldr
-        (\((var, ltyp), i) (list,regst) ->
+      (rs, ssa', regst') = foldr
+        (\((var, ltyp), i) (list, ssa, regst) ->
            let
              ityp :: FCType
              ityp = convert ltyp
-             (regst', ereg) = _mapFCRValue (FCFunArg ityp fname i) regst
+             ((ssa', regst'), ereg) = _mapFCRValue (FCFunArg ityp fname i) ssa regst
              reg = case ereg of
                      Left _ -> error "OpenFunBlock: FCFunArg musi być unique"
                      Right r -> r
            in
-             (reg:list, regst'))
-        ([], regst)
+             (reg:list, ssa', regst'))
+        ([], ssa, regst)
         (zip args [1..len])
       varenv' = foldl
         (\varenv (var, reg) -> VE.declareVar var reg varenv)
         varenv
         (zip (fst <$> args) rs)
-    put (FCC varenv' regst' (fccConstants fcc) [0])
+    put (FCC varenv' ssa' regst' (fccConstants fcc) [0])
     return $ zip (map convert (snd <$> args)) rs
 
 closeFunBlock :: FCCompiler ()
@@ -691,8 +664,14 @@ withProtectedVars vars f = do
   endprotection
   return res
 
-getBlockName :: FCCompiler String
-getBlockName = error "GetBlockName: undefined case"
+getBlockCount :: FCCompiler Int
+getBlockCount = do
+  blockCounts <- gets fccBlocksCounts
+  case blockCounts of
+    [] -> error "BlockCounts is empty"
+    (x:xs) -> return x
+-- getBlockName :: FCCompiler String
+-- getBlockName = error "GetBlockName: undefined case"
   -- do
   --   x <- gets f
   --   return $ case x of
@@ -701,21 +680,36 @@ getBlockName = error "GetBlockName: undefined case"
   --     (WhileBlockState name _ _ _ _ _):rest -> name
       -- _ -> error "GetBlockName: undefined case"
 
+unpackMaybe :: Maybe a -> a
+unpackMaybe x = error "Expected Just got Nothing" `fromMaybe` x
+
+_getRegisterType :: FCRegister -> FCRegMap -> Maybe FCType
+_getRegisterType reg regenv = case reg of
+  VoidReg -> Just Void
+  Reg _ -> x reg regenv
+  DReg n -> error "This one is not neeed"
+  LitInt n -> Just Int
+  LitBool b -> Just Bool
+  Et s -> Just Void
+  where
+    x :: FCRegister -> FCRegMap -> Maybe FCType
+    x r regenv= fCRValueType <$> _lookupRegister r regenv
+
 getRegisterType :: FCRegister -- ^ 
   -> FCCompiler FCType
 getRegisterType r = do
-   rtype <- gets (_lookupRegister r . fccRegEnv)
-   return $ case rtype of
-             Just rtype -> (fCRValueType rtype)
-             _ -> error "Could not find type of register"
+  x <- _getRegisterType r <$> gets fccRegMap
+  return $ unpackMaybe x
+
 getVar :: String -> FCCompiler (FCType, FCRegister)
 getVar var = do
   mvalue <- gets (VE.lookupVar var . fccVenv)
-  let value = error "GetVar: Could not find variable" `fromMaybe` mvalue
-  rtype <- gets (_lookupRegister value . fccRegEnv)
-  return $ case rtype of
-             Just rtype -> (fCRValueType rtype, value)
-             _ -> error "GetVar: Could not find type of Register"
+  let reg = unpackMaybe mvalue
+  rtype<- getRegisterType reg
+  return (rtype, reg)
+
+getVars :: [String] -> FCCompiler [(FCType, FCRegister)]
+getVars  = mapM getVar
 
 setVar :: String -> FCRegister -> FCCompiler ()
 setVar var value = do
@@ -727,6 +721,6 @@ declVar var value = do
   vars <- gets fccVenv
   modify $ fccPutVenv (VE.declareVar var value vars)
 
-phi :: [String] -> (String, [FCRegister]) -> (String, [FCRegister]) -> FCCompiler ()
-phi = undefined
+-- phi :: [String] -> (String, [FCRegister]) -> (String, [FCRegister]) -> FCCompiler ()
+-- phi = undefined
 

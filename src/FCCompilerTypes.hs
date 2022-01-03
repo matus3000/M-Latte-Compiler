@@ -194,7 +194,9 @@ fCRValueType x = case x of
   Return ft m_fr -> ft
   FCEmptyExpr -> Void
   FCFunArg ft s n -> ft
-
+  FCPhi ft _ -> ft
+  FCJump _ -> Void
+  FCCondJump{} -> Void
 --INDENTATION MONAD --
 
 instance Show FCType where
@@ -309,7 +311,7 @@ printFCBlock (FCComplexBlock name blocks) = do
   unless (null name) (pmPutLine $ name ++ ":")
   mapM_ printFCBlock blocks
 printFCBlock fcblock@FCCondBlock {} = do
-  pmPutLine $ ":" ++ bname fcblock
+  pmPutLine $ bname fcblock ++ ":"
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
     ++ showBlockLabel failureBlock

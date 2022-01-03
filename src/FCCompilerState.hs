@@ -4,7 +4,7 @@
 {-# LANGUAGE ExistentialQuantification#-}
 
 module FCCompilerState (VariableEnvironment(..),
-                        LLRegisterState(..),
+                        -- LLRegisterState(..),
                         ConstantsEnvironment(..)) where
 
 import FCCompilerTypes
@@ -30,11 +30,11 @@ class VariableEnvironment a key value | a -> key value where
   _closeClosure :: a -> a
   _getVariable :: key -> a -> Maybe value
 
-class LLRegisterState a where
-  _lookupRegister :: FCRegister -> a -> Maybe FCRValue
-  _normalizeFCRValue :: FCRValue -> a -> FCRValue
-  _mapFCRValue    :: FCRValue -> a -> (a, Either FCRegister FCRegister)
-  _mapFCRValueRegType :: RegType -> FCRValue -> a -> (a, Either FCRegister FCRegister)
+-- class LLRegisterState a where
+--   _lookupRegister :: FCRegister -> a -> Maybe FCRValue
+--   _normalizeFCRValue :: FCRValue -> a -> FCRValue
+--   _mapFCRValue    :: FCRValue -> a -> (a, Either FCRegister FCRegister)
+--   _mapFCRValueRegType :: RegType -> FCRValue -> a -> (a, Either FCRegister FCRegister)
 
 class BlockBuilder a stmtType blockType | a -> stmtType blockType where
   -- _openNewBlock :: a -> a

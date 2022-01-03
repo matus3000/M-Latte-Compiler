@@ -102,30 +102,20 @@ data FCBlock =
   failure   :: FCBlock,
   post      :: FCBlock
   } |
-               FCPartialCond {
-                 bname :: String,
-                 condEval :: FCBlock,
-                 jmpReg :: FCRegister,
-                 success :: FCBlock,
-                 failure :: FCBlock
+  FCPartialCond {
+  bname :: String,
+  condEval :: FCBlock,
+  jmpReg :: FCRegister,
+  success :: FCBlock,
+  failure :: FCBlock
                } |
-               FCCondElseBlock {
-                 -- | 
-                 condition :: FCBlock,
-                 -- | 
-                 onSuccess :: FCBlock,
-                 -- | 
-                 onFail :: FCBlock,
-                 -- |
-                 postFactum::FCBlock} |
-               FCWhileBlock {
-                 -- | 
-                 condition :: FCBlock,
-                 -- | 
-                 onSuccess :: FCBlock,
-                 -- |
-                 postFactum :: FCBlock
-                 }
+  FCWhileBlock {
+  bname :: String,
+  post :: FCBlock,
+  condEval :: FCBlock,
+  jmpReg :: FCRegister,
+  succeess :: FCBlock
+  }
 
 data FCFun = FCFun
   { name :: String,
@@ -323,7 +313,7 @@ printFCBlock fcblock@FCCondBlock {} = do
     failureBlock = failure fcblock
     showBlockLabel = showFCLabel . bname
 printFCBlock fcblock@FCPartialCond{} = do
-  pmPutLine $ ":" ++ bname fcblock
+  pmPutLine $ bname fcblock ++ ":"
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
     ++ showBlockLabel failureBlock
@@ -333,8 +323,16 @@ printFCBlock fcblock@FCPartialCond{} = do
     successBlock = success fcblock
     failureBlock = failure fcblock
     showBlockLabel = showFCLabel . bname
-
-
+printFCBlock fcblock@FCWhileBlock{} = do
+  pmPutLine $ bname fcblock ++ ":"
+  printFCInstr (VoidReg, jump (bname $ post fcblock))
+  printFCBlock successBlock
+  printFCBlock (post fcblock)
+  printFCBlock (condEval fcblock)
+  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++ showBlockLabel successBlock ++ ", " ++ "%ERROR"
+  where
+    successBlock = succeess fcblock
+    showBlockLabel = showFCLabel . bname
 printFCFun :: FCFun -> IndentMonad
 printFCFun (FCFun name rt args body) = do
   pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"

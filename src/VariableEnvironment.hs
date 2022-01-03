@@ -53,7 +53,7 @@ instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
   lookupVar key (VarEnv vmap modvars redvars) = case DM.lookup key vmap of
     Nothing -> Nothing
     Just (x:xs) -> Just x
-    Just [] -> error "Not so sure if that's an error"
+    Just [] -> Nothing
   openClosure (VarEnv vmap modvars redvars) = VarEnv vmap (DS.empty : modvars) (DS.empty : redvars)
   closeClosure (VarEnv vmap modvars redvars) =
     let

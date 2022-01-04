@@ -74,7 +74,7 @@ data FCRegister = VoidReg | Reg String | DReg Integer| LitInt Int | LitBool Bool
 type PhiFrom = FCRegister
 type PhiValue = FCRegister
 
-data FCRValue = FunCall FCType String [FCRegister] |
+data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCBinOp FCType FCBinaryOperator FCRegister FCRegister |
                 FCUnOp FCType FCUnaryOperator FCRegister |
                 FCPhi FCType [(PhiValue, PhiFrom)] |
@@ -125,7 +125,7 @@ data FCFun = FCFun
     body :: FCBlock
   }
 
-data FCProg = FCProg [FCFun]
+data FCProg = FCProg [(String, (FCType, [FCType]))] [FCFun]
 
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
@@ -213,6 +213,13 @@ instance Show FCBinaryOperator where
       _ -> error "show FCBinOP undefined"
 
 
+showFun :: String -> FCType -> [(FCType, FCRegister)] -> String
+showFun name rt args = show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ")"
+  where
+    showArgs :: [(FCType, FCRegister)] -> String
+    showArgs = foldr (\(ftype, freg) s ->
+                        show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
+            
 instance Show FCRValue where
   showsPrec _ (FCBinOp ftype fbop r1 r2) s =
     show fbop ++ " " ++ show ftype ++ " " ++ show r1 ++ ", "
@@ -239,6 +246,7 @@ instance Show FCRValue where
   showsPrec _ (FCJump register) s = "br label " ++ show register ++ s
   showsPrec _ (FCCondJump c1 s f) str = "br i8 " ++ show c1 ++ ", label "
     ++ show s ++ ", label " ++ show f ++ str
+  showsPrec _ (FunCall rtype fname args) str = "call " ++ showFun fname rtype args ++ str
   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
     -- PRINT MONAD
@@ -337,6 +345,8 @@ printFCBlock fcblock@FCWhileBlock{} = do
   where
     successBlock = succeess fcblock
     showBlockLabel = showFCLabel . bname
+
+
 printFCFun :: FCFun -> IndentMonad
 printFCFun (FCFun name rt args body) = do
   pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"
@@ -347,8 +357,17 @@ printFCFun (FCFun name rt args body) = do
     showArgs = foldr (\(ftype, freg) s ->
                         show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
 
-
 showFCProg :: FCProg -> IndentMonad
-showFCProg (FCProg list) = do
+showFCProg (FCProg exts list) = do
+  pmNewLine
+  mapM_ (\(name, (rtype, args))-> printExternalFunction name rtype args) exts
   pmNewLine
   mapM_ (\fun -> printFCFun fun >> pmNewLine) list
+  where
+    printExternalFunction :: String -> FCType -> [FCType] -> IndentMonad
+    printExternalFunction name rtype list = do
+      pmPutLine $ "declare " ++ show rtype ++ " @" ++ name ++ "(" ++ f list ++ ")"
+      where
+        f :: [FCType] -> String
+        f = foldr (\ftype s ->
+                        show ftype ++ (if null s then "" else ", ") ++ s) ""

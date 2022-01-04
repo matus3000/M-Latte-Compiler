@@ -744,5 +744,6 @@ functionMetaDataNew ifuns =
                           foldl (\set pair -> set `DS.union` snd pair) DS.empty y
   in
     FM _somehowCalledFun _dynamicFunctions
+
 data FunctionMetadata = FM {usedExternal :: DS.Set String,
                             dynamicFunctions :: DS.Set String}

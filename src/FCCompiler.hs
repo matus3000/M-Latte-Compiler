@@ -15,6 +15,7 @@ import Prelude
 import Data.Maybe (fromMaybe)
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
+import qualified Data.List as DL
 import Control.Monad.State.Strict
 import Control.Monad.Except (Except, MonadError)
 
@@ -31,12 +32,18 @@ import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi),
 import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import qualified IDefinition as IDef
-import Data.Foldable (foldlM)
+import Data.Foldable (foldlM, foldl')
 import qualified VariableEnvironment as VC
-import DynFlags (ContainsDynFlags)
 import qualified Control.Arrow as BiFunctor
 import qualified VariableEnvironment as Ve
+import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 
+externalFunctions :: [([Char], (FCType, [FCType]))]
+externalFunctions = [("printString", (Void, [String])),
+                     ("printInt", (Void, [Int])),
+                     ("error", (Void, [])),
+                     ("readInt", (Int, [])),
+                     ("readString", (String, []))]
 
 type FCVarEnv = VarEnv String FCRegister
 
@@ -103,7 +110,10 @@ fccNew = FCC newVarEnv 0 fcRegMapNew ctcNew laNew
 data FCC = FCC {fccVenv::FCVarEnv, fccSSAAloc::SSARegisterAllocator,
                 fccRegMap::FCRegMap, fccConstants::CompileTimeConstants,
                 fccLabelAlloc::LabelAllocator}
-type FCCompiler = State FCC
+
+type FCCStateMonad = State FCC
+type FCCompiler = ReaderT FCCFunEnv FCCStateMonad
+
 fccPutVenv :: FCVarEnv -> FCC -> FCC
 fccPutVenv ve' (FCC ve ssa rm c b) = FCC ve' ssa rm c b
 fccPutRegMap :: FCRegMap -> FCC -> FCC
@@ -150,7 +160,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
         (cbb, (ftype, reg)) <- translateExpr bname bbNew  ie True -- Można zmienić na BIFunctor
         return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg, bname)
     f bn bb (ie:rest) (failureEt, postEt) = do
-      
+
         (cb, (_, jreg)) <- withOpenBlock Check $ \bname ->
           (bbBuildAnonymous `BiFunctor.first`) <$> translateExpr bname bbNew  ie True
 
@@ -253,15 +263,17 @@ translateExpr bname bb ie save =
         translateAndExpr bname bb ie True
       Tr.IOr _ -> do
         translateOrExpr bname bb ie True
-       -- Tr.IApp fun ies -> let
-       --   r ::  Bool -> Bool -> FCCompiler FCRegister
-       --   r returnValues staticFun = if staticFun && not returnValues then return VoidReg else
-       --     do
-       --       args <- mapM (`translateExpr` True) (reverse ies)
-       --       prependFCRValue (if staticFun then RNormal else (if returnValues then RDynamic else RVoid))  $
-       --         FunCall fun args
-       --   in
-       --   isFunStatic fun >>= r True
+      Tr.IApp fun ies -> do
+        (bb', rargs) <- foldlM
+          (\(bb, acc) ie -> BiFunctor.second (:acc) <$> translateExpr' bb ie True)
+          (bb,[])
+          ies
+        rtype <- askFunType fun
+        let args = reverse rargs
+        (bb, reg)<- emplaceFCRValue (FunCall rtype fun args) bb'
+        return (bb, (rtype, reg))
+
+
       Tr.IRel iro ie ie' -> do
         (bb', (ftype1, r1)) <- translateExpr' bb ie True
         (bb'', (ftype2, r2)) <- translateExpr' bb' ie' True
@@ -402,20 +414,31 @@ translateFun (Tr.IFun s lt lts ib) = do
       return $ FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuildAnonymous fbody}
 
 
-translateProg :: [Tr.IFun] -> FCCompiler FCProg
+translateProg :: [Tr.IFun] -> FCCompiler [FCFun]
 translateProg list = do
   fbodies <- mapM
     ( \ifun ->
         do
           translateFun ifun
     ) list
-  return $ FCProg fbodies
+  return fbodies
 
 compileProg :: [Tr.IFun] -> FCProg
 compileProg ifun = let
-  (s, a) = runState (translateProg ifun) initialFcc
+  funMetadata = Tr.functionMetaDataNew ifun
+  _usedExternals = foldr (\r -> (if fst r `DS.member` Tr.usedExternal funMetadata
+                                then (r:)
+                                else id))
+                  [] externalFunctions
+  _ftypeMapInit = DM.fromList ([("printInt", Void), ("printString", Void),
+                               ("readInt", Int), ("readString", String),
+                               ("error", Void)])
+  _ftypeMap :: DM.Map String FCType
+  _ftypeMap = foldl' (\map (Tr.IFun fname ltype _ _) -> DM.insert fname (convert ltype) map) _ftypeMapInit ifun
+  funEnv = FCCFE _ftypeMap (Tr.dynamicFunctions funMetadata)
+  (funBodies, a) = runState (runReaderT (translateProg ifun) funEnv) initialFcc
   in
-  s
+    FCProg _usedExternals funBodies
   where
     initialFcc = fccPutVenv (VE.openClosure $ fccVenv fccNew) fccNew
 
@@ -453,11 +476,31 @@ instance ConstantsEnvironment CompileTimeConstants String String where
 
 emplaceFCRValue :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue rvalue bb = do
-  fcc <- get
-  let ((ssa,regmap), r) = _mapFCRValue rvalue (fccSSAAloc fcc) (fccRegMap fcc)
-  case r of
-    Left r' -> return (bb, r')
-    Right r' -> modify (fccPutRegMap regmap . fccPutSSAAloc ssa) >> return (bbaddInstr (r', rvalue) bb, r')
+  case rvalue of
+    FunCall ft fname x0 -> do
+      dynamicFun <- not <$> isFunStatic fname
+      if dynamicFun
+        then g rvalue bb
+        else f rvalue bb
+    _ -> f rvalue bb
+  where
+    f :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
+    f rvalue bb = do
+      fcc <- get
+      let ((ssa,regmap), r) = _mapFCRValue rvalue (fccSSAAloc fcc) (fccRegMap fcc)
+      case r of
+        Left r' -> return (bb, r')
+        Right r' -> modify (fccPutRegMap regmap . fccPutSSAAloc ssa) >> return (bbaddInstr (r', rvalue) bb, r')
+    g :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
+    g rvalue bb = do
+      fcc <- get
+      let ssa = fccSSAAloc fcc
+          regmap = fccRegMap fcc
+          (ssa', r) = _nextRegister ssa
+          regmap' = _setOnlyRegister r rvalue regmap
+      modify (fccPutRegMap regmap' . fccPutSSAAloc ssa')
+      return (bbaddInstr (r, rvalue) bb, r)
+        
 
 -- getConstStringEt :: String -> FCCompiler String
 -- getConstStringEt s = do
@@ -631,6 +674,11 @@ withProtectedVars vars f = do
   endprotection
   return res
 
+isFunctionStatic :: String -> FCCompiler Bool
+isFunctionStatic fname = error "Unimplemented"
+getFunctionType :: String -> FCCompiler FCType
+getFunctionType fname = error "Unimplemented"
+
 generateLabel :: FCCompiler String
 generateLabel = do
   la <- gets fccLabelAlloc
@@ -689,3 +737,16 @@ declVar :: String -> FCRegister -> FCCompiler ()
 declVar var value = do
   vars <- gets fccVenv
   modify $ fccPutVenv (VE.declareVar var value vars)
+
+isFunStatic :: String -> FCCompiler Bool
+isFunStatic str = do
+  asks (feIsFunStatic str)
+askFunType :: String -> FCCompiler FCType
+askFunType fname = do
+  asks (unpackMaybe . feGetFunType fname)
+feGetFunType :: String -> FCCFunEnv -> Maybe FCType
+feGetFunType str fe = str `DM.lookup` fccfeRetTypes fe
+feIsFunStatic :: String -> FCCFunEnv -> Bool
+feIsFunStatic str fe = not $ str `DS.member` fccfeDynamicFuns fe
+data FCCFunEnv = FCCFE {fccfeRetTypes :: DM.Map String FCType,
+                       fccfeDynamicFuns :: DS.Set String}

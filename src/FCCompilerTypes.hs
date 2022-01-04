@@ -114,7 +114,8 @@ data FCBlock =
   post :: FCBlock,
   condEval :: FCBlock,
   jmpReg :: FCRegister,
-  succeess :: FCBlock
+  succeess :: FCBlock,
+  epilogueLabel :: String
   }
 
 data FCFun = FCFun
@@ -132,7 +133,7 @@ data BlockType = FunBody | Normal | BoolExp | Cond | While | Check | Success | F
 
 instance Show FCRegister where
   showsPrec _ VoidReg = showString ""
-  showsPrec _ (Reg str) = showString "%" . showString str
+  showsPrec _ (Reg str) = showString "%R" . showString str
   showsPrec _ (DReg int) = showString "%" . shows int
   showsPrec y (LitBool x) = showsPrec y (if x then 1 else 0)
   showsPrec y (LitInt x) = showsPrec y x
@@ -293,15 +294,18 @@ printFCInstr (reg, instr) = do
 showFCLabel :: String -> String
 showFCLabel x = "label %" ++ x
 
+printFCBlockName :: FCBlock -> IndentMonad
+printFCBlockName fcblock = do
+  unless (null (bname fcblock)) (pmPutLine $ bname fcblock ++ ":")
 printFCBlock :: FCBlock -> IndentMonad
-printFCBlock (FCNamedSBlock name instr) = do
-  unless (null name) (pmPutLine $ name ++ ":")
+printFCBlock fcblock@(FCNamedSBlock name instr) = do
+  printFCBlockName fcblock
   mapM_ printFCInstr instr
-printFCBlock (FCComplexBlock name blocks) = do
-  unless (null name) (pmPutLine $ name ++ ":")
+printFCBlock fcblock@(FCComplexBlock name blocks) = do
+  printFCBlockName fcblock
   mapM_ printFCBlock blocks
 printFCBlock fcblock@FCCondBlock {} = do
-  pmPutLine $ bname fcblock ++ ":"
+  printFCBlockName fcblock
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
     ++ showBlockLabel failureBlock
@@ -313,7 +317,7 @@ printFCBlock fcblock@FCCondBlock {} = do
     failureBlock = failure fcblock
     showBlockLabel = showFCLabel . bname
 printFCBlock fcblock@FCPartialCond{} = do
-  pmPutLine $ bname fcblock ++ ":"
+  printFCBlockName fcblock
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
     ++ showBlockLabel failureBlock
@@ -324,12 +328,12 @@ printFCBlock fcblock@FCPartialCond{} = do
     failureBlock = failure fcblock
     showBlockLabel = showFCLabel . bname
 printFCBlock fcblock@FCWhileBlock{} = do
-  pmPutLine $ bname fcblock ++ ":"
+  printFCBlockName fcblock
   printFCInstr (VoidReg, jump (bname $ post fcblock))
   printFCBlock successBlock
   printFCBlock (post fcblock)
   printFCBlock (condEval fcblock)
-  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++ showBlockLabel successBlock ++ ", " ++ "%ERROR"
+  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++ showBlockLabel successBlock ++ ", " ++ "%" ++(epilogueLabel fcblock)
   where
     successBlock = succeess fcblock
     showBlockLabel = showFCLabel . bname

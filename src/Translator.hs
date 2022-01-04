@@ -16,7 +16,9 @@ module Translator(
     IAddOp(..),
     IMulOp(..),
     MetaData(..),
-    stmtsToInternal
+    stmtsToInternal,
+    functionMetaDataNew,
+    FunctionMetadata(..)
   ) where
 
 import IDefinition
@@ -42,37 +44,10 @@ import qualified Control.Arrow as BiFunctor
 import qualified Control.Arrow as Data.BiFunctor
 
 import VariableEnvironment(CVariableEnvironment(..), VarEnv(..), newVarEnv)
+import DynFlags (GeneralFlag(Opt_BuildDynamicToo))
+import qualified Control.Monad as DS
 
 type VariableEnvironment = VarEnv String IType
-
--- vEnvLookup :: String -> VariableEnvironment -> Maybe IType
--- vEnvLookup str (VEnv _ map) =
---   case DM.lookup str map
---   of
---     Nothing -> Nothing
---     Just [] -> Nothing
---     Just (x:xs) -> Just x
--- vEnvUpdate ::  String -> IType -> VariableEnvironment ->  VariableEnvironment
--- vEnvUpdate str itype vEnv@(VEnv set map) =
---   case DM.lookup str map
---   of
---     Just (x:xs) -> VEnv set $ DM.insert str (itype:xs) map
---     _ -> vEnv
--- vEnvPush :: String -> IType -> VariableEnvironment ->  VariableEnvironment
--- vEnvPush str itype vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str map
---   in
---   if DS.member str set
---   then vEnv
---   else VEnv (DS.insert str set) (DM.insert str (itype:oldValue) map)
--- vEnvPop :: String -> VariableEnvironment -> VariableEnvironment
--- vEnvPop str vEnv@(VEnv set map) = let oldValue = [] `fromMaybe` DM.lookup str map
---   in
---   if DS.member str set
---   then VEnv (DS.delete str set) $ DM.insert str (if null oldValue then oldValue else tail oldValue) map
---   else vEnv
--- vEnvAddBlock :: VariableEnvironment ->  VariableEnvironment
--- vEnvRemoveBlock :: VariableEnvironment -> VariableEnvironment
-
 
 data IType = StaticInt Integer | DynamicInt | StaticBool Bool | DynamicBool |
               StaticString String | DynamicString | IVoid
@@ -125,7 +100,6 @@ type FunTranslationEnvironment = (FunContext, VariableEnvironment)
 type CompilerExcept = Except SemanticError
 type StateStrMap x = State (DM.Map String x)
 type Compiler varEnv = ReaderT FunctionEnvironment (StateT varEnv CompilerExcept)
-
 
 getFunctionEnvironment :: Program -> CompilerExcept FunctionEnvironment
 getFunctionEnvironment (Program _ topDef) =
@@ -205,7 +179,7 @@ f (EOr pos e1 e2) = let
         -- (StaticBool True) -> return (DynamicBool, IOr iLeft iRight) -- 30.12 Przed optymalizacją
         (StaticBool True) -> return (DynamicBool, iLeft) -- 30.12 Po optymalizacją
         (StaticBool False) -> return left
-        DynamicBool -> case iRight of 
+        DynamicBool -> case iRight of
           IOr ies -> return $ (DynamicBool, IOr (iLeft:ies))
           _ -> return (DynamicBool, IOr [iLeft, iRight])
         _ -> throwErrorInContext (TypeConflict (getPosition e2) LBool (cast itype))
@@ -457,7 +431,7 @@ stmtsToInternal ((Cond pos expr stmt md): rest) = do
       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
       modify $ BiFunctor.second endProtection
       (irest, restBool) <- stmtsToInternal rest
-      let icond = ICond iexpr iblock (MD md)
+      let icond = ICondElse iexpr iblock (IBlock []) (MD md)
       return (icond:irest, restBool)
 
 stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
@@ -697,3 +671,78 @@ reltoIRel x = case x of
   GE ma -> IGE
   EQU ma -> IEQU
   NE ma -> INE
+
+
+getCalledFunctions :: IFun -> DS.Set String
+getCalledFunctions (IFun _ _ _ iblock) =
+  getCalledFunctionB iblock DS.empty
+  where
+    getCalledFunctionB :: IBlock -> DS.Set String -> DS.Set String
+    getCalledFunctionB (IBlock stmts) set =
+      foldl (\set instr -> getCalledFunctionInstr instr set) set stmts
+    getCalledFunctionInstr :: IStmt -> DS.Set String -> DS.Set String
+    getCalledFunctionInstr is set = case is of
+      IBStmt ib -> getCalledFunctionB ib set
+      IDecl iis -> undefined
+      IAss s ie -> getCalledFunctionExpr ie set
+      IIncr s -> set
+      IDecr s -> set
+      IRet ie -> getCalledFunctionExpr ie set
+      IVRet -> set
+      ICond ie ib md -> getCalledFunctionB ib $ getCalledFunctionExpr ie set
+      ICondElse ie ib ib' md -> getCalledFunctionB ib' $ getCalledFunctionB ib $ getCalledFunctionExpr ie set
+      IWhile ie ib md -> getCalledFunctionB ib $ getCalledFunctionExpr ie set
+      ISExp ie -> getCalledFunctionExpr ie set
+      IStmtEmpty -> set
+    getCalledFunctionExpr :: IExpr -> DS.Set String -> DS.Set String
+    getCalledFunctionExpr ie set = case ie of
+      IVar s -> set
+      ILitInt n -> set
+      ILitBool b -> set
+      IApp s ies -> foldl (flip getCalledFunctionExpr) (s `DS.insert` set) ies
+      IString s -> set
+      INeg ie' -> getCalledFunctionExpr ie' set
+      INot ie' -> getCalledFunctionExpr ie' set
+      IAnd ies -> foldl (flip getCalledFunctionExpr) set ies
+      IOr ies -> foldl (flip getCalledFunctionExpr) set ies
+      IAdd iao ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
+      IMul imo ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
+      IRel iro ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
+    getCalledFunctionsItems :: [IItem] -> DS.Set String ->DS.Set String
+    getCalledFunctionsItems items set = foldl (flip x) set items
+      where
+      x :: IItem -> DS.Set String -> DS.Set String
+      x (IItem _ iexp) set = getCalledFunctionExpr iexp set
+
+functionMetaDataNew :: [IFun] -> FunctionMetadata
+functionMetaDataNew ifuns =
+  let x = map (const DS.empty) ifuns
+      y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
+
+      initDepMap = foldl (\map (IFun fname _ _ _) -> DM.insert fname DS.empty map) DM.empty ifuns
+      buildDepMap :: [(String, DS.Set String)] -> DM.Map String (DS.Set String)
+      buildDepMap list = foldr f initDepMap list
+        where
+          f :: (String, DS.Set String) -> DM.Map String (DS.Set String) -> DM.Map String (DS.Set String)
+          f (fname, set) map = foldl (\map pname -> DM.insert
+                                                    pname
+                                                    (DS.insert fname (DS.empty `fromMaybe`DM.lookup pname map)) map)
+                               map set
+      buildDynamic :: DM.Map String (DS.Set String) -> DS.Set String -> DS.Set String -> DS.Set String
+      buildDynamic map emplaced set = if null emplaced then set else
+        let  emplaced' = foldl (\emplaced' name ->
+                                  DS.union emplaced'
+                                  (DS.difference (DS.empty `fromMaybe` DM.lookup name map) set))
+                         DS.empty emplaced
+        in
+          buildDynamic map emplaced' (DS.union emplaced' set)
+      _depMap = buildDepMap y
+      _external = ["printInt", "printString", "error", "readInt", "readString"]
+      _externalFunSet = DS.fromList _external
+      _dynamicFunctions = buildDynamic _depMap _externalFunSet _externalFunSet
+      _somehowCalledFun = DS.intersection _externalFunSet $
+                          foldl (\set pair -> set `DS.union` snd pair) DS.empty y
+  in
+    FM _somehowCalledFun _dynamicFunctions
+data FunctionMetadata = FM {usedExternal :: DS.Set String,
+                            dynamicFunctions :: DS.Set String}

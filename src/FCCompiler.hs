@@ -85,7 +85,7 @@ bbaddBlock :: FCBlock -> BlockBuilder -> BlockBuilder
 bbaddBlock block bb = case (instrAcc bb, subBlockName bb) of
   ([], "") -> BB [] "" (block:blockAcc bb)
   ([], str) -> error "I haven't thought out that one yet."
-  (list, str) -> BB [] "" (block:FCNamedSBlock str (reverse list):blockAcc bb)
+  (list, str) -> BB [] "" (block:FCNamedSBlock str (reverse list) ():blockAcc bb)
 
 bbaddInstr :: FCInstr -> BlockBuilder -> BlockBuilder
 bbaddInstr instr bb = BB (instr:instrAcc bb) (subBlockName bb) (blockAcc bb)
@@ -102,12 +102,15 @@ bbBuildNamed bb name = let
          subName ++ " name: " ++ name
   else
     case (instrs, blocks) of
-      ([], []) -> FCComplexBlock name []
+      ([], []) -> FCComplexBlock name [] ()
       ([], [block]) -> case block of
-        (FCNamedSBlock "" fcabi) -> FCNamedSBlock name fcabi
-        _ -> FCComplexBlock name [block]
-      ([], blocks) -> FCComplexBlock name (reverse blocks)
-      (instrs, blocks) -> FCComplexBlock name (reverse $ FCNamedSBlock (subBlockName bb) (reverse instrs):blocks)
+        (FCNamedSBlock "" fcabi _)-> FCNamedSBlock name fcabi ()
+        _ -> FCComplexBlock name [block] ()
+      ([], blocks) -> FCComplexBlock name (reverse blocks) ()
+      (instrs, blocks) -> FCComplexBlock name (reverse $
+                                               (FCNamedSBlock
+                                               (subBlockName bb)
+                                                (reverse instrs) ()):blocks) ()
 bbNameSub :: BlockBuilder -> String -> BlockBuilder
 bbNameSub (BB is _ bs) str = BB is str bs
 bbNew :: BlockBuilder
@@ -159,7 +162,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
           (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 
-        let returnBlock = FCCondBlock bname cb jreg sb fb pb
+        let returnBlock = FCCondBlock bname cb jreg sb fb pb ()
         return (bbaddBlock returnBlock bb, (Bool, res))
 
     f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister, String)
@@ -178,7 +181,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
         (fb, (_, _)) <- withOpenBlock Failure $ \bname -> do
           return (bbBuildNamed (bbaddInstr (VoidReg , jump failureEt) bbNew) bname, (Void, VoidReg))
 
-        let returnBlock = FCPartialCond bn cb jreg sb fb
+        let returnBlock = FCPartialCond bn cb jreg sb fb ()
 
         return (returnBlock, r, bn')
 translateOrExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool
@@ -208,7 +211,7 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
           (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 
-        let returnBlock = FCCondBlock bname cb jreg sb fb pb
+        let returnBlock = FCCondBlock bname cb jreg sb fb pb ()
         return (bbaddBlock returnBlock bb, (Bool, res))
 
     f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister, String)
@@ -228,7 +231,7 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
         (fb, r, bn') <- withOpenBlock Failure $ \bname -> do
           f bname bbNew rest (successEt, postEt)
 
-        let returnBlock = FCPartialCond bn cb jreg sb fb
+        let returnBlock = FCPartialCond bn cb jreg sb fb ()
 
         return (returnBlock, r, bn')
 
@@ -343,7 +346,7 @@ translateInstr name bb stmt = case stmt of
     pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
                                                  pbb <- phi (zip ascmd (zip sVals fVals)) successEt failureEt
                                                  return (bbBuildNamed pbb name))
-    return $ bbaddBlock (FCCondBlock name cb jr sb fb pb) bb
+    return $ bbaddBlock (FCCondBlock name cb jr sb fb pb ()) bb
   Tr.IWhile ie ib (Tr.MD md) -> withOpenBlock While $ \wname -> do
     labels <- generateLabels 4
     let [postEtStr, checkEtStr, successEndStr, epilogueEndStr] = labels
@@ -382,7 +385,7 @@ translateInstr name bb stmt = case stmt of
       modify (fccPutRegMap regenv')
       return (bbBuildNamed bb name)
 
-    return $ bbNameSub (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr) bb) epilogueEndStr
+    return $ bbNameSub (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr ()) bb) epilogueEndStr
     where
       preallocRegisters :: [(String, FCType)] -> FCCompiler [(FCRegister, FCType)]
       preallocRegisters names = do

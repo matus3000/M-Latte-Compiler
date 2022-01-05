@@ -7,7 +7,8 @@ module FCCompilerTypes (
   FCRegister(..),
   FCRValue(..),
   FCInstr(..),
-  FCBlock(..),
+  FCBlock'(..),
+  FCBlock,
   FCFun(..),
   FCType(..),
   RegType(..),
@@ -93,32 +94,36 @@ type FCInstr = (FCRegister, FCRValue)
 type FCSimpleBlock = FCSimpleBlock' FCInstr
 type FCSimpleBlock' a = [a]
 
-data FCBlock =
-  FCNamedSBlock {bname ::String, instrs :: FCSimpleBlock}|
-  FCComplexBlock {bname :: String, blocks :: [FCBlock]} |
+type FCBlock = FCBlock' FCInstr ()
+
+data FCBlock' a b =
+  FCNamedSBlock {bname ::String, instrs :: FCSimpleBlock' a, addition::b}|
+  FCComplexBlock {bname :: String, blocks :: [FCBlock' a b], addition::b} |
   FCCondBlock {
   bname     :: String,
-  condEval  :: FCBlock,
+  condEval  :: FCBlock' a b,
   jmpReg    :: FCRegister,
-  success   :: FCBlock,
-  failure   :: FCBlock,
-  post      :: FCBlock
+  success   :: FCBlock' a b,
+  failure   :: FCBlock' a b,
+  post      :: FCBlock' a b,
+  addition  :: b
   } |
   FCPartialCond {
   bname :: String,
-  condEval :: FCBlock,
+  condEval :: FCBlock' a b,
   jmpReg :: FCRegister,
-  success :: FCBlock,
-  failure :: FCBlock
+  success :: FCBlock' a b,
+  failure :: FCBlock' a b,
+  addition  :: b
                } |
   FCWhileBlock {
   bname :: String,
-  post :: FCBlock,
-  condEval :: FCBlock,
+  post :: FCBlock' a b,
+  condEval :: FCBlock' a b,
   jmpReg :: FCRegister,
-  succeess :: FCBlock,
-  epilogueLabel :: String
-  }
+  succeess :: FCBlock' a b,
+  epilogueLabel :: String,
+  addition  :: b}
 
 data FCFun = FCFun
   { name :: String,
@@ -310,10 +315,10 @@ printFCBlockName :: FCBlock -> IndentMonad
 printFCBlockName fcblock = do
   unless (null (bname fcblock)) (pmPutLine $ bname fcblock ++ ":")
 printFCBlock :: FCBlock -> IndentMonad
-printFCBlock fcblock@(FCNamedSBlock name instr) = do
+printFCBlock fcblock@(FCNamedSBlock name instr _) = do
   printFCBlockName fcblock
   mapM_ printFCInstr instr
-printFCBlock fcblock@(FCComplexBlock name blocks) = do
+printFCBlock fcblock@(FCComplexBlock name blocks _) = do
   printFCBlockName fcblock
   mapM_ printFCBlock blocks
 printFCBlock fcblock@FCCondBlock {} = do

@@ -424,7 +424,7 @@ translateFun (Tr.IFun s lt lts ib) = do
   withOpenFunBlock s lt lts $ \res ->
     do
       fbody <- translateBlock s ib bbNew
-      return $ FCFun {name = s, retType = convert lt, args = res, FCT.body = bbBuildAnonymous fbody}
+      return $ FCFun' {name = s, retType = convert lt, args = res, FCT.body = bbBuildAnonymous fbody}
 
 
 translateProg :: [Tr.IFun] -> FCCompiler [FCFun]
@@ -480,9 +480,9 @@ _mapFCRValue fcrValue ssa regmap = case fcrValue `_lookupRValue` regmap of
     Just r -> ((ssa, regmap), Left r)
 
 _openClosureRM :: FCRegMap -> FCRegMap
-_openClosureRM (FCRegMap regmap rvalmap) = FCRegMap (VE.openClosure  regmap) (VE.openClosure rvalmap)
+_openClosureRM (FCRegMap regmap rvalmap) = FCRegMap regmap (VE.openClosure rvalmap)
 _closeClosureRM  :: FCRegMap -> FCRegMap
-_closeClosureRM (FCRegMap regmap rvalmap) = FCRegMap (VE.closeClosure  regmap) (VE.closeClosure rvalmap)
+_closeClosureRM (FCRegMap regmap rvalmap) = FCRegMap regmap (VE.closeClosure rvalmap)
 
 emplaceFCRValue :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue rvalue bb = do
@@ -761,4 +761,52 @@ data FCCFunEnv = FCCFE {fccfeRetTypes :: DM.Map String FCType,
                        fccfeDynamicFuns :: DS.Set String}
 
 
+
+               ------------- LCSE - GCSE ------------
+data FCInternalValueType = FCIVT1 FCRValue
+
+type FCInternal1 = FCBlock' (FCInstr) ((DS.Set FCInternalValueType))
+
+type DependantRegisters = [FCRegister]
+type GSCERegDefMap = DM.Map FCRegister FCRValue
+type GSCERegValueMap = DM.Map FCRegister FCInternalValueType
+type GSCERegToDepsMap = DM.Map FCRegister DependantRegisters
+
+type GSCEMonad1State = (GSCERegValueMap, GSCERegToDepsMap)
+type GSCEMonad1 = State GSCEMonad1State
+type GSCEFCFun1 = FCFun' FCInstr (DS.Set FCInternalValueType)
+
+type GSCEFCBlock1 = FCBlock' FCInstr (DS.Set FCInternalValueType)
+type GSCEMonad2State = (GSCERegDefMap, GSCERegValueMap, GSCERegToDepsMap)
+
+
+
+gsce :: FCCompiler ([FCFun]) -> FCCompiler ()
+gsce funs = do
+  rmap <- _regMap . fccRegMap <$> get
+  undefined
+  where
+    -- f :: FCFun -> GSCEMonad1 ()
+    -- f fun = g (block fun)
+    gsceS1RegValMap :: GSCEMonad1State -> GSCERegValueMap
+    gsceS1RegValMap = fst
+    gsceS1RegToDepsMap :: GSCEMonad1State -> GSCERegToDepsMap
+    gsceS1RegToDepsMap = snd
+    gsceFCRValToInVal :: FCRValue -> FCInternal1
+    gsceFCRValToInVal = undefined
+    g :: FCBlock -> GSCEMonad1 GSCEFCBlock1
+    g block = do
+      case block of
+        FCNamedSBlock s x0 _ -> undefined 
+        FCComplexBlock s fbs _ -> undefined
+        FCCondBlock s fb fr fb' fb2 fb3 _ -> undefined
+        FCPartialCond s fb fr fb' fb2 _ -> undefined
+        FCWhileBlock s fb fb' fr fb2 str _ -> undefined
+    h :: FCSimpleBlock -> GSCEMonad1 (DS.Set FCInternalValueType)
+    h instr = do
+      gsceState1 <- get
+      let
+        regValMap = gsceS1RegValMap gsceState1
+        regToDepsMap = gsceS1RegToDepsMap gsceState1
+      undefined
 

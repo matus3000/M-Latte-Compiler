@@ -9,7 +9,9 @@ module FCCompilerTypes (
   FCInstr(..),
   FCBlock'(..),
   FCBlock,
+  FCSimpleBlock,
   FCFun(..),
+  FCFun'(..),
   FCType(..),
   RegType(..),
   BlockType(..),
@@ -125,12 +127,14 @@ data FCBlock' a b =
   epilogueLabel :: String,
   addition  :: b}
 
-data FCFun = FCFun
+
+data FCFun' a b = FCFun'
   { name :: String,
     retType :: FCType,
     args :: [(FCType, FCRegister)],
-    body :: FCBlock
+    body :: FCBlock' a b
   }
+type FCFun = FCFun' FCInstr ()
 
 data FCProg = FCProg [(String, (FCType, [FCType]))] [(FCRegister, String)] [FCFun]
 
@@ -357,7 +361,7 @@ printFCBlock fcblock@FCWhileBlock{} = do
 
 
 printFCFun :: FCFun -> IndentMonad
-printFCFun (FCFun name rt args body) = do
+printFCFun (FCFun' name rt args body) = do
   pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"
   withIndent $ printFCBlock body
   pmPutLine "}"

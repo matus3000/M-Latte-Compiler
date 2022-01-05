@@ -37,7 +37,7 @@ data FCControlFlowOp = Jmp
 data FCUnaryOperator = Neg | BoolNeg
   deriving (Eq, Ord)
 
-data FCType = Int | Bool | String | Void
+data FCType = Int | Bool | DynamicStringPtr | Void | ConstStringPtr Int
   deriving (Eq, Ord)
 
 data FCBinaryOperator = Add | Sub | Div | Mul | Mod | LShift | RShif | ByteAnd | ByteOr | ByteXor |
@@ -68,7 +68,7 @@ binOpType x = case x of
   Gth -> FBoolean
   Ge -> FBoolean
 
-data FCRegister = VoidReg | Reg String | DReg Integer| LitInt Int | LitBool Bool | Et String
+data FCRegister = VoidReg | Reg String | ConstString Int | LitInt Int | LitBool Bool | Et String
   deriving (Eq, Ord)
 
 type PhiFrom = FCRegister
@@ -79,6 +79,7 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCUnOp FCType FCUnaryOperator FCRegister |
                 FCPhi FCType [(PhiValue, PhiFrom)] |
                 ConstValue FCType FCRegister |
+                BitCast FCType FCRegister FCType |
                 GetPointer FCType FCRegister FCRegister |
                 Return FCType (Maybe FCRegister) |
                 FCEmptyExpr |
@@ -89,7 +90,8 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
 
 type FCInstr = (FCRegister, FCRValue)
 
-type FCSimpleBlock = [FCInstr]
+type FCSimpleBlock = FCSimpleBlock' FCInstr
+type FCSimpleBlock' a = [a]
 
 data FCBlock =
   FCNamedSBlock {bname ::String, instrs :: FCSimpleBlock}|
@@ -125,7 +127,7 @@ data FCFun = FCFun
     body :: FCBlock
   }
 
-data FCProg = FCProg [(String, (FCType, [FCType]))] [FCFun]
+data FCProg = FCProg [(String, (FCType, [FCType]))] [(FCRegister, String)] [FCFun]
 
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
@@ -134,16 +136,16 @@ data BlockType = FunBody | Normal | BoolExp | Cond | While | Check | Success | F
 instance Show FCRegister where
   showsPrec _ VoidReg = showString ""
   showsPrec _ (Reg str) = showString "%R" . showString str
-  showsPrec _ (DReg int) = showString "%" . shows int
   showsPrec y (LitBool x) = showsPrec y (if x then 1 else 0)
   showsPrec y (LitInt x) = showsPrec y x
+  showsPrec y (ConstString x) = showString "@S" . showsPrec y x
   showsPrec _ (Et et) = showString "%" . showString et
 
 instance Convertable IDef.LType FCType where
   convert x = case x of
     IDef.LBool  -> Bool
     IDef.LInt  -> Int
-    IDef.LString -> String
+    IDef.LString -> DynamicStringPtr
     IDef.LVoid  -> Void
     _ -> undefined
 
@@ -181,6 +183,7 @@ fCRValueType x = case x of
     FBoolean -> Bool
   FCUnOp ft fuo fr -> ft
   ConstValue ft fr -> ft
+  BitCast ftfrom _ ftto -> ftto
   GetPointer ft fr fr' -> ft
   Return ft m_fr -> ft
   FCEmptyExpr -> Void
@@ -193,7 +196,8 @@ fCRValueType x = case x of
 instance Show FCType where
   show Int = "i32"
   show Bool = "i1"
-  show String = "i8*"
+  show DynamicStringPtr = "i8*"
+  show (ConstStringPtr x) = "[" ++ show x ++ " x i8 ]*"
   show Void = "void"
 
 instance Show FCBinaryOperator where
@@ -231,7 +235,7 @@ instance Show FCRValue where
   showsPrec _ (FCUnOp ftype fuop r1) s = case fuop of
     Neg -> "sub " ++ show ftype ++ " 0, " ++ show r1 ++ s
     BoolNeg -> error "Instancja Show dla FCRValue(BoolNeg) niezdefiniowana"
-    -- show fuop ++
+  showsPrec _ (BitCast ftf r ftt) s = "bitcast " ++ show ftf ++ " " ++ show r ++ " to " ++ show ftt ++ s
   showsPrec _ (FCPhi _ []) s = error "Malformed (empty) PHI"
   showsPrec _ (FCPhi x list) s = "phi " ++ show x ++ " " ++
     foldr (\(rvalue, rfrom) rest ->
@@ -358,16 +362,24 @@ printFCFun (FCFun name rt args body) = do
                         show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
 
 showFCProg :: FCProg -> IndentMonad
-showFCProg (FCProg exts list) = do
-  pmNewLine
+showFCProg (FCProg exts consts list) = do
+  mapM_ (\(reg,str)-> pmPutLine $ showConstant reg str) consts
+  unless (null consts) pmNewLine
   mapM_ (\(name, (rtype, args))-> printExternalFunction name rtype args) exts
-  pmNewLine
+  unless (null list) pmNewLine
   mapM_ (\fun -> printFCFun fun >> pmNewLine) list
+  pmNewLine
   where
     printExternalFunction :: String -> FCType -> [FCType] -> IndentMonad
     printExternalFunction name rtype list = do
       pmPutLine $ "declare " ++ show rtype ++ " @" ++ name ++ "(" ++ f list ++ ")"
-      where
+        where
         f :: [FCType] -> String
         f = foldr (\ftype s ->
                         show ftype ++ (if null s then "" else ", ") ++ s) ""
+    showConstant :: FCRegister -> String -> String 
+    showConstant freg@(ConstString x) str = show freg ++ " = internal constant "
+      ++ "[" ++ show (1 + length str) ++ "x i8" ++ "] c" ++ "\"" ++ str' ++ "\""
+      where
+        str' = str ++ "\\00"
+    showConstant _ _ = undefined

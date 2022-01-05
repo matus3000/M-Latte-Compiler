@@ -39,11 +39,11 @@ import qualified VariableEnvironment as Ve
 import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 
 externalFunctions :: [([Char], (FCType, [FCType]))]
-externalFunctions = [("printString", (Void, [String])),
+externalFunctions = [("printString", (Void, [DynamicStringPtr])),
                      ("printInt", (Void, [Int])),
                      ("error", (Void, [])),
                      ("readInt", (Int, [])),
-                     ("readString", (String, []))]
+                     ("readString", (DynamicStringPtr, []))]
 
 type FCVarEnv = VarEnv String FCRegister
 
@@ -57,9 +57,9 @@ data LabelAllocator = LA {laNextId::Int, laNameRequired::Bool}
 laNew :: LabelAllocator
 laNew = LA 0 False
 laNextLabel :: LabelAllocator -> (LabelAllocator, String)
-laNextLabel la = (LA (1+laNextId la) False, ("L" ++ show (laNextId la)))
+laNextLabel la = (LA (1+laNextId la) False, "L" ++ show (laNextId la))
 laLookupNextLabel :: LabelAllocator -> (LabelAllocator, String)
-laLookupNextLabel la = (LA (laNextId la) True, ("L" ++ show (laNextId la)))
+laLookupNextLabel la = (LA (laNextId la) True, "L" ++ show (laNextId la))
 
 ssaRegAllocNew :: SSARegisterAllocator
 ssaRegAllocNew = 0
@@ -67,9 +67,17 @@ ssaRegAllocNew = 0
 fcRegMapNew :: FCRegMap
 fcRegMapNew = FCRegMap (VE.openClosure VE.newVarEnv) (VE.openClosure VE.newVarEnv)
 
-data CompileTimeConstants = CTC {constMap :: DM.Map String String,
+data CompileTimeConstants = CTC {constMap :: DM.Map String Int,
                                  nextEtId :: Int}
 ctcNew = CTC DM.empty 0
+ctcEmplaceString :: String -> CompileTimeConstants -> (CompileTimeConstants, FCRegister)
+ctcEmplaceString str ctc = case str `DM.lookup` constMap ctc of
+  Just x -> (ctc, ConstString x)
+  Nothing -> (ctc', ConstString x')
+    where
+      x' = nextEtId ctc
+      ctc' = CTC (DM.insert str (nextEtId ctc) (constMap ctc)) (1 + nextEtId ctc)
+
 
 data BlockBuilder = BB {instrAcc::[FCInstr], subBlockName:: String,  blockAcc::[FCBlock]}
 
@@ -246,9 +254,11 @@ translateExpr bname bb ie save =
     case ie of
       Tr.ILitInt n -> return  (bb, (Int , LitInt $ fromInteger n))
       Tr.ILitBool b -> return (bb, (Bool, LitBool b))
-       -- Tr.IString s -> do
-       --   constEt <- getConstStringEt s
-       --   prependFCRValue RNormal $ GetPointer (Et constEt) (LitInt 0)
+      Tr.IString s -> do
+         constEt <- getConstStringReg s
+         (bb',r) <- emplaceFCRValue (BitCast (ConstStringPtr (1 + length s))
+                                           constEt DynamicStringPtr) bb
+         return (bb', (DynamicStringPtr, r))
       Tr.IVar s -> (bb, ) <$> getVar s
       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr bb save
       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr bb save
@@ -308,8 +318,8 @@ translateInstr name bb stmt = case stmt of
     labels <- generateLabels 3
     let ascmd = DS.toAscList md
         [postLabel, successLabel, failureLabel] = labels
-        successEt = Et $ successLabel
-        failureEt = Et $ failureLabel
+        successEt = Et successLabel
+        failureEt = Et failureLabel
 
 
     (cb, jr) <- withOpenBlock  Check $ (\name -> (do
@@ -430,15 +440,17 @@ compileProg ifun = let
                                 then (r:)
                                 else id))
                   [] externalFunctions
-  _ftypeMapInit = DM.fromList ([("printInt", Void), ("printString", Void),
-                               ("readInt", Int), ("readString", String),
-                               ("error", Void)])
+  _ftypeMapInit = DM.fromList [("printInt", Void), ("printString", Void),
+                               ("readInt", Int), ("readString", DynamicStringPtr),
+                               ("error", Void)]
   _ftypeMap :: DM.Map String FCType
   _ftypeMap = foldl' (\map (Tr.IFun fname ltype _ _) -> DM.insert fname (convert ltype) map) _ftypeMapInit ifun
   funEnv = FCCFE _ftypeMap (Tr.dynamicFunctions funMetadata)
   (funBodies, a) = runState (runReaderT (translateProg ifun) funEnv) initialFcc
+  constants :: [(FCRegister, String)]
+  constants = DM.foldrWithKey (\ string i -> ((ConstString i, string):)) [] (constMap $ fccConstants a)
   in
-    FCProg _usedExternals funBodies
+    FCProg _usedExternals constants funBodies
   where
     initialFcc = fccPutVenv (VE.openClosure $ fccVenv fccNew) fccNew
 
@@ -458,8 +470,8 @@ _lookupRegister reg (FCRegMap rmap _) = VE.lookupVar reg rmap
 _mapFCRValue :: FCRValue -> SSARegisterAllocator -> FCRegMap -> ((SSARegisterAllocator, FCRegMap), Either FCRegister FCRegister )
 _mapFCRValue fcrValue ssa regmap = case fcrValue `_lookupRValue` regmap of
     Nothing -> let
-      (ssa', r) = _nextRegister ssa
-      regmap' = _putRegisterValue r fcrValue regmap
+      (ssa', r) = if (fCRValueType fcrValue == Void) then (ssa, VoidReg) else _nextRegister ssa
+      regmap' = if (r == VoidReg) then regmap else _putRegisterValue r fcrValue regmap
       in
       ((ssa', regmap'), Right r)
     Just r -> ((ssa, regmap), Left r)
@@ -468,11 +480,6 @@ _openClosureRM :: FCRegMap -> FCRegMap
 _openClosureRM (FCRegMap regmap rvalmap) = FCRegMap (VE.openClosure  regmap) (VE.openClosure rvalmap)
 _closeClosureRM  :: FCRegMap -> FCRegMap
 _closeClosureRM (FCRegMap regmap rvalmap) = FCRegMap (VE.closeClosure  regmap) (VE.closeClosure rvalmap)
-
-instance ConstantsEnvironment CompileTimeConstants String String where
-  _getPointer str ctc@(CTC cmap next) = case DM.lookup str cmap of
-      Just v -> (ctc, v)
-      Nothing -> (CTC (DM.insert str ("C" ++ show next) cmap ) (next + 1), "C" ++ show next)
 
 emplaceFCRValue :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue rvalue bb = do
@@ -496,17 +503,17 @@ emplaceFCRValue rvalue bb = do
       fcc <- get
       let ssa = fccSSAAloc fcc
           regmap = fccRegMap fcc
-          (ssa', r) = _nextRegister ssa
+          (ssa', r) = if fCRValueType rvalue == Void then (ssa, VoidReg ) else _nextRegister ssa
           regmap' = _setOnlyRegister r rvalue regmap
       modify (fccPutRegMap regmap' . fccPutSSAAloc ssa')
       return (bbaddInstr (r, rvalue) bb, r)
-        
 
--- getConstStringEt :: String -> FCCompiler String
--- getConstStringEt s = do
---   (consEnb, et) <- _getPointer s . fccConstants <$> get
---   modify (fccPutConstants consEnb)
---   return et
+
+getConstStringReg :: String -> FCCompiler FCRegister
+getConstStringReg s = do
+  (consEnb, et) <- ctcEmplaceString s . fccConstants <$> get
+  modify (fccPutConstants consEnb)
+  return et
 
 -- putConstState :: ConstStringEnv -> FCC ()
 -- putConstState newEnv = modifyConstState (const newEnv)
@@ -699,7 +706,6 @@ _getRegisterType :: FCRegister -> FCRegMap -> Maybe FCType
 _getRegisterType reg regenv = case reg of
   VoidReg -> Just Void
   Reg _ -> x reg regenv
-  DReg n -> error "This one is not neeed"
   LitInt n -> Just Int
   LitBool b -> Just Bool
   Et s -> Just Void
@@ -750,3 +756,6 @@ feIsFunStatic :: String -> FCCFunEnv -> Bool
 feIsFunStatic str fe = not $ str `DS.member` fccfeDynamicFuns fe
 data FCCFunEnv = FCCFE {fccfeRetTypes :: DM.Map String FCType,
                        fccfeDynamicFuns :: DS.Set String}
+
+
+

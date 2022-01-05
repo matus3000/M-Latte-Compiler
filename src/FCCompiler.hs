@@ -876,12 +876,6 @@ gsceBlock set fcblock = case fcblock of
                 in
                   (regdef', rvmap', set')
 gsceBlockList :: DS.Set GSCEInternalVal -> [FCBlock' FCInstr a] -> GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
--- gsceBlock fcblock = case fcblock of 
---   FCNamedSBlock s x0 x1 -> _
---   FCComplexBlock s fbs x0 -> _
---   FCCondBlock s fb fr fb' fb2 fb3 x0 -> _
---   FCPartialCond s fb fr fb' fb2 x0 -> _
---   FCWhileBlock s fb fb' fr fb2 str x0 -> _
 
 gsceBlockList initSet = foldrM (flip f) (initSet , [])
   where
@@ -923,54 +917,3 @@ gsceOptimize common prev z = do
               ) (regdef, regreg, ssa, bb) list
       put (regdef', valreg, regtdeps, regreg', ssa')
       return bb'
--- gsce funs = do
---   rmap <- _regMap . fccRegMap <$> get
---   undefined
---   where
---     -- f :: FCFun -> GSCEMonad1 ()
---     -- f fun = g (block fun)
---     gsceFCRValToInVal :: FCRValue -> GSCEInternalVal
---     gsceFCRValToInVal = undefined
---     g' :: DS.Set GSCEInternalVal -> GSCEFCBlock1 -> GSCEFCBlock2
---     g' set fcblock = case fcblock of
---       FCNamedSBlock s x0 set' -> FCNamedSBlock s x0 (set', set)
---       FCComplexBlock s fbs set' -> undefined
---       FCCondBlock s fb fr fb' fb2 fb3 set' -> undefined
---       FCPartialCond s fb fr fb' fb2 set' -> undefined
---       FCWhileBlock s fb fb' fr fb2 str set' -> undefined
---       where
---         g'folded :: DS.Set GSCEInternalVal ->[GSCEFCBlock1] -> [GSCEFCBlock2]
---         g'folded set x = foldr (\block (set, rest) ->
---                                    case block of 
---           FCNamedSBlock {} -> g' set block
---           FCComplexBlock s fbs set' -> _
---           FCCondBlock s fb fr fb' fb2 fb3 set' -> _
---           FCPartialCond s fb fr fb' fb2 set' -> _
---           FCWhileBlock s fb fb' fr fb2 str set' -> _
---                                      ) (set, undefined) x
---     g :: FCBlock -> GSCEMonad1 GSCEFCBlock1
---     g block = do
---       case block of
---                FCNamedSBlock s x0 _ -> do
---                  set <- h x0
---                  return $ FCNamedSBlock s x0 set
---                FCComplexBlock s fbs _ -> do
---                  fbs' <- mapM g fbs
---                  let set = foldl' (\(!set) fb -> DS.union set (addition fb)) DS.empty fbs'
---                  return $ FCComplexBlock s fbs' set
---                FCCondBlock s fb fr fb' fb2 fb3 _ -> do
---                  fbs' <- mapM g [fb, fb', fb2, fb3]
---                  let set = foldl' (\(!set) fb -> DS.union set (addition fb)) DS.empty fbs'
---                      [gfb, gfb', gfb2, gfb3] = fbs'
---                  return $ FCCondBlock s gfb fr gfb' gfb2 gfb3 set
---                FCPartialCond s fb fr fb' fb2 _ ->  do
---                  fbs' <- mapM g [fb, fb', fb2]
---                  let set = foldl' (\(!set) fb -> DS.union set (addition fb)) DS.empty fbs'
---                      [gfb, gfb', gfb2] = fbs'
---                  return $ FCPartialCond s gfb fr gfb' gfb2 set
---                FCWhileBlock s fb fb' fr fb2 str _ -> do
---                  fbs' <- mapM g [fb, fb', fb2]
---                  let set = foldl' (\(!set) fb -> DS.union set (addition fb)) DS.empty fbs'
---                      [gfb, gfb', gfb2] = fbs'
---                  return $ FCWhileBlock s gfb gfb' fr gfb2 str set
-

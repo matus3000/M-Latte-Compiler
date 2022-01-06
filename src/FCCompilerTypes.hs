@@ -355,7 +355,7 @@ printFCBlock fcblock@FCWhileBlock{} = do
   printFCBlock (condEval fcblock)
   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++ showBlockLabel successBlock ++ ", " ++ "%" ++(epilogueLabel fcblock)
   where
-    successBlock = succeess fcblock
+    successBlock = success fcblock
     showBlockLabel = showFCLabel . bname
 
 

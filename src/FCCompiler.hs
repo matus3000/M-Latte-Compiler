@@ -39,7 +39,8 @@ import qualified Control.Arrow as BiFunctor
 import qualified VariableEnvironment as Ve
 import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 import Data.List (nub)
-import NCGMonad (getDebugBlock)
+
+
 
 externalFunctions :: [([Char], (FCType, [FCType]))]
 externalFunctions = [("printString", (Void, [DynamicStringPtr])),
@@ -976,3 +977,60 @@ gsceOptimize common prev z = do
               ) (regdef, regreg, ssa, bb) list
       put (regdef', valreg, regtdeps, regreg', ssa')
       return bb'
+
+------------------------------ MyExpr --------------------------------------------------------------
+
+data SRExpr' a = ST (DM.Map a Int) Int | SRDynamic
+type SRExpr = SRExpr' FCRegister
+
+f :: (Int -> Int -> Int) -> SRExpr -> SRExpr -> SRExpr
+f op s1 s2 = case (s1, s2) of
+  (ST m1 i1, ST m2 i2) ->
+    let
+      (m1',m2') = if DM.size m1 < DM.size m2 then (m1, m2) else (m2, m1)
+      i3 = i1 `op` i2
+      m3 =
+        foldl'
+          ( \map (key, val) ->
+              let x = (i1 `op` (0 `fromMaybe` DM.lookup key map))
+               in if x == 0
+                    then DM.delete key map
+                    else DM.insert key x map
+          )
+          m2'
+          (DM.toList m1')
+    in
+      ST m3 i3
+  _ -> SRDynamic
+
+sradd :: SRExpr -> SRExpr -> SRExpr
+srsub :: SRExpr -> SRExpr -> SRExpr
+sradd = f (+)
+srsub = f (-)
+srmul = f (*)
+
+sreq :: SRExpr -> SRExpr -> Bool
+sreq s1 s2 = case (s1, s2) of
+  (ST m1 i1, ST m2 i2) -> i1 == i2 && m1 == m2
+  _ -> False
+
+
+substitute :: (Ord a ) => SRExprAtom' a -> SRExpr' (SRExprAtom' a) -> SRExpr' (SRExprAtom' a) -> SRExpr' (SRExprAtom' a)
+substitute atom subst srexpr = case (subst, srexpr) of
+  (SRDynamic, _) -> SRDynamic
+  (_, SRDynamic) -> SRDynamic
+  (ST m1 i1, ST m2 i2) -> 
+    case DM.lookup atom m2 of
+      Nothing -> srexpr
+      Just multiplier -> ST newMap (i1 * multiplier + i2)
+        where
+          newMap =
+            foldl' (\map (key,value) ->
+                             let nv = ((value * multiplier) + (0 `fromMaybe` DM.lookup key map))
+                             in if nv == 0
+                                then DM.delete key map
+                                else DM.insert key nv map) m2 (DM.toList m1)
+type SRExprAtom' a = a
+type SRExprAtom = SRExprAtom' FCRegister
+
+-- convertFCInstr :: DS.Set SRExprAtom -> DM.Map FCRegister SRExpr -> FCInstr -> SRExpr

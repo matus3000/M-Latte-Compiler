@@ -39,6 +39,7 @@ import qualified Control.Arrow as BiFunctor
 import qualified VariableEnvironment as Ve
 import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 import Data.List (nub)
+import NCGMonad (getDebugBlock)
 
 externalFunctions :: [([Char], (FCType, [FCType]))]
 externalFunctions = [("printString", (Void, [DynamicStringPtr])),
@@ -762,7 +763,66 @@ feIsFunStatic str fe = not $ str `DS.member` fccfeDynamicFuns fe
 data FCCFunEnv = FCCFE {fccfeRetTypes :: DM.Map String FCType,
                        fccfeDynamicFuns :: DS.Set String}
 
+               -------------- Loop Optimization ---------------
 
+isInstrDynamic :: DS.Set String -> DS.Set FCRegister -> FCInstr -> Bool
+isInstrDynamic dfuns dregs (reg, instr) = case instr of
+  FunCall ft fname args -> fname `DS.member` dfuns || any ((`DS.member` dregs). snd) args
+  FCBinOp ft fbo fr fr' -> fr `DS.member` dregs || fr' `DS.member` dregs
+  FCUnOp ft fuo fr -> fr `DS.member` dregs
+  FCPhi ft x0 -> True
+  BitCast ft fr ft' -> fr `DS.member` dregs
+  GetPointer ft fr fr' -> fr `DS.member` dregs || fr' `DS.member` dregs
+  Return ft m_fr -> True
+  FCEmptyExpr -> False
+  FCFunArg ft s n -> error "FCFunArg"
+  FCJump fr -> True
+  FCCondJump fr fr' fr2 -> True
+
+optimizeLoop :: DS.Set String -> FCBlock' FCInstr a -> FCBlock' FCInstr a
+optimizeLoop dfuns fcblock  = case fcblock of
+  FCNamedSBlock{} -> fcblock
+  FCComplexBlock s fbs x0 -> FCComplexBlock s (map optimizeLoop' fbs) x0
+  FCCondBlock s fc fr fs ff fp x0 -> FCCondBlock s fc fr (optimizeLoop' fs) (optimizeLoop' ff) fp x0
+  FCPartialCond {} -> fcblock
+  FCWhileBlock {} ->
+    let
+      (postB, successB, condB) = (\x -> (post x, success x, condEval x)) fcblock
+      successB' = optimizeLoop' successB
+      (_, res') = foldl' (gBlock dfuns) (DS.empty, []) [postB, condB, successB']
+      whileBlock = FCWhileBlock { bname = bname fcblock, post = postB,
+                                  condEval = condB, jmpReg = jmpReg fcblock,
+                                  success=successB', epilogueLabel = epilogueLabel fcblock,
+                                  addition = addition fcblock}
+      my_undef = error "OptimizeLoopPlaceholder"
+    in
+      if null res' then whileBlock
+      else FCComplexBlock "" [FCNamedSBlock "" (reverse res') my_undef, whileBlock] my_undef
+  where
+    optimizeLoop' = optimizeLoop dfuns
+    g :: DS.Set String -> (DS.Set FCRegister, [FCInstr]) -> [FCInstr] -> (DS.Set FCRegister, [FCInstr])
+    g dynfun (set, res) list = case list of
+      [] -> (set, res)
+      (x:xs) -> let
+        (reg, rval) = x
+        in
+        if isInstrDynamic' set x
+        then g' (DS.insert reg set, res) xs
+        else g' (set, x:res) xs
+      where
+        g' = g dynfun
+        isInstrDynamic' = isInstrDynamic dynfun
+    gBlock :: DS.Set String -> (DS.Set FCRegister, [FCInstr]) -> FCBlock' FCInstr a  ->
+      (DS.Set FCRegister, [FCInstr])
+    gBlock dynfun (set, rest) fcblock = case fcblock of
+      FCNamedSBlock s x0 a -> g' (set, rest) x0
+      FCComplexBlock s fbs a -> foldl' gBlock' (set, rest) fbs
+      FCCondBlock s fb fr fb' fb2 fb3 a -> foldl' gBlock' (set, rest) [fb, fb', fb2, fb3]
+      FCPartialCond s fb fr fb' fb2 a -> foldl' gBlock' (set, rest) [fb, fb', fb2]
+      FCWhileBlock s fb fb' fr fb2 str a -> (set, rest)
+      where
+        g' = g dynfun
+        gBlock' = gBlock dynfun
 
                ------------- LCSE - GCSE ------------
 
@@ -793,7 +853,6 @@ swapRegister r1 r2 instr = case instr of
   FCBinOp ft fbo fr fr' -> FCBinOp ft fbo (subst fr) (subst fr')
   FCUnOp ft fuo fr -> FCUnOp ft fuo (subst fr)
   FCPhi ft x0 -> FCPhi ft (map (BiFunctor.first subst) x0)
-  ConstValue ft fr -> ConstValue ft fr
   BitCast ft fr ft' -> BitCast ft fr ft'
   GetPointer ft fr fr' -> GetPointer ft fr fr'
   Return ft m_fr -> Return ft (subst <$> m_fr)

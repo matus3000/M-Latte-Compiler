@@ -1,6 +1,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+-- Zmienić Post na SimpleBlock
 module FCCompilerTypes (
   FCUnaryOperator(..),
   FCBinaryOperator(..),
@@ -81,7 +82,6 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCBinOp FCType FCBinaryOperator FCRegister FCRegister |
                 FCUnOp FCType FCUnaryOperator FCRegister |
                 FCPhi FCType [(PhiValue, PhiFrom)] |
-                ConstValue FCType FCRegister |
                 BitCast FCType FCRegister FCType |
                 GetPointer FCType FCRegister FCRegister |
                 Return FCType (Maybe FCRegister) |
@@ -123,7 +123,7 @@ data FCBlock' a b =
   post :: FCBlock' a b,
   condEval :: FCBlock' a b,
   jmpReg :: FCRegister,
-  succeess :: FCBlock' a b,
+  success :: FCBlock' a b,
   epilogueLabel :: String,
   addition  :: b}
 
@@ -191,7 +191,6 @@ fCRValueType x = case x of
     FArithmetic -> ft
     FBoolean -> Bool
   FCUnOp ft fuo fr -> ft
-  ConstValue ft fr -> ft
   BitCast ftfrom _ ftto -> ftto
   GetPointer ft fr fr' -> ft
   Return ft m_fr -> ft

@@ -156,24 +156,29 @@ lcseBlock env block arg = case block of
       (arg', FCCondBlock s fc' fr fs' ff' fp x0)
   FCPartialCond s fc fr fs ff x0 -> let
       (arg', fc') = lcseBlock env fc arg
-      (valenv, subs) = arg'
       (_, fs') = lcseBlock env fs arg'
       (_, ff') = lcseBlock env ff arg'
     in
       (arg', FCPartialCond s fc' fr fs' ff' x0)
-  FCWhileBlock s fb fb' fr fb2 str x0 -> (arg, block)
+  FCWhileBlock s fp fc fr fs str x0 -> let
+    (arg', fp') = lcseBlock env fp arg
+    (arg'', fc') = lcseBlock env fc arg
+    (_, fs') = lcseBlock env fs arg''
+    in
+    (arg'', FCWhileBlock s fp' fc' fr fs' str x0)
       
 gcse :: Environment -> (Arg,CommonValues, FCBlock) -> (Arg, CommonValues, FCBlock)
 gcse env (args, (vib, vbb), block) =
   case block of
     FCNamedSBlock s x0 x1 -> let
       (args', vib') = foldl' getValue' (args, vib) x0
-      (args'', list) = DS.foldl' eliminate (args', []) (DS.intersection vib' vbb)
-      newblock = FCNamedSBlock (if null list then s else "") x0 x1
+      -- (args'', list) = DS.foldl' eliminate (args', []) (DS.intersection vib' vbb)
+      -- newblock = FCNamedSBlock (if null list then s else "") x0 x1
       in
-      if null list
-      then (args'', (vib', vbb), newblock)
-      else (args'', (vib', vbb), FCComplexBlock "" (FCNamedSBlock "" list ():[newblock]) ())
+      -- if null list
+      -- then (args'', (vib', vbb), newblock)
+      -- else (args'', (vib', vbb), FCComplexBlock "" (FCNamedSBlock "" list ():[newblock]) ())
+      (args', (vib', vbb), block)
     FCComplexBlock s fbs x0 ->
       let
         rfbs = reverse fbs
@@ -191,23 +196,26 @@ gcse env (args, (vib, vbb), block) =
         (argss, (vibs, _), fs') = gcse' (argsf, (DS.empty, DS.empty), fs)
         (argsc, (vibc, _), fc') = gcse' (argss, (DS.empty, DS.empty), fc)
         vib' = DS.union vibf $ DS.union vibs vibc
-        (args', list) = DS.foldl' eliminate (argsc, [])
-          (DS.intersection vbb vib')
-        newCondBlock = FCCondBlock (if null list then s else "") fc' fr fs' ff' fp x0
-        newBlock = if null list then newCondBlock
+        (args', list) = DS.foldl' eliminate (argsc, []) (DS.intersection vbb vib')
+        (args'', list') = DS.foldl' eliminate (args', list) (DS.intersection vibs vibf)
+        newCondBlock = FCCondBlock (if null list' then s else "") fc' fr fs' ff' fp x0
+        newBlock = if null list' then newCondBlock
           else
-          FCComplexBlock s [FCNamedSBlock "" list (), newCondBlock] ()
+          FCComplexBlock s [FCNamedSBlock "" list' (), newCondBlock] ()
       in
-        (args', (vibc, vbb), newBlock)
+        (args'', (vibc, vbb), newBlock)
     FCPartialCond s fc fr fs ff x0 -> let
-        (argsf, (vibf, _), ff') = gcse' (args, (DS.empty, DS.empty), ff)
-        (argss, (vibs, _), fs') = gcse' (argsf, (DS.empty, DS.empty), fs)
-        (argsc, (vibc, _), fc') = gcse' (argss, (DS.empty, DS.empty), fc)
+        (argsf, (vibf, _), _) = gcse' (args, (DS.empty, DS.empty), ff)
+        (argss, (vibs, _), _) = gcse' (argsf, (DS.empty, DS.empty), fs)
+        (argsc, (vibc, _), _) = gcse' (argss, (DS.empty, DS.empty), fc)
         vib' = DS.union vibf $ DS.union vibs vibc
-          FCComplexBlock s [FCNamedSBlock "" list (), newCondBlock] ()
       in
-        (args', (vib', vbb), newBlock)
-    FCWhileBlock s fb fb' fr fb2 str x0 -> (args, (vib, vbb), block)
+      (argsc, (vib', vbb), block)
+    FCWhileBlock s fp fc fr fs str x0 -> let
+      (args', _, fs') = gcse' (args, (DS.empty , DS.empty), fs)
+      block' = FCWhileBlock s fp fc fr fs' str x0
+      in
+      (args', (vib, vbb), block')
     _ -> undefined
   where
     getValue' = getValue env

@@ -1,7 +1,8 @@
-module Gsce where
+module Gsce (gcseOptimize) where
+
 
 -- TO DO
--- Zamienić Venv na zwykłą mapę
+-- Optymalizacja polegająca na korzystaniu z poprzednich args. Czyli nie bezwarukowy insert do RegDef
 
 import Prelude
 
@@ -118,54 +119,54 @@ substituteRegisters substitution fcrvalue = case fcrvalue of
     subst :: FCRegister -> FCRegister
     subst reg = reg `fromMaybe` DM.lookup reg  substitution
 
-type InternalValEnv = VE.VarEnv InternalVal FCRegister
-type LsceArg = (InternalValEnv, Substitution)
+type InternalValEnv = DM.Map InternalVal FCRegister
+type LcseArg = (InternalValEnv, Substitution)
 
 
-lsceInstr :: Environment -> [FCInstr] -> (LsceArg, [FCInstr]) -> (LsceArg, [FCInstr])
-lsceInstr env instrs (lscearg, res) = case instrs of
-  [] -> (lscearg, res)
+lcseInstr :: Environment -> [FCInstr] -> (LcseArg, [FCInstr]) -> (LcseArg, [FCInstr])
+lcseInstr env instrs (lcsearg, res) = case instrs of
+  [] -> (lcsearg, res)
   ((reg, rvalue):xs) ->
-    lsceInstr env xs
+    lcseInstr env xs
       (case convertRValue env rvalue' of
-          Nothing -> (lscearg, (reg, rvalue'):res)
-          Just iv -> case iv `VE.lookupVar` map of
-            Nothing -> ((VE.declareVar iv reg map, substitution), (reg, rvalue'):res)
+          Nothing -> (lcsearg, (reg, rvalue'):res)
+          Just iv -> case iv `DM.lookup` map of
+            Nothing -> ((DM.insert iv reg map, substitution), (reg, rvalue'):res)
             Just reg' -> ((map, DM.insert reg reg' substitution), res))
     where
-      (map, substitution) = lscearg
+      (map, substitution) = lcsearg
       rvalue' = substituteRegisters substitution rvalue
 
-lsceBlock :: Environment -> FCBlock -> LsceArg -> (LsceArg, FCBlock)
-lsceBlock env block arg = case block of
-  FCNamedSBlock s x0 x1 -> (lscearg', FCNamedSBlock s x0' x1)
+lcseBlock :: Environment -> FCBlock -> LcseArg -> (LcseArg, FCBlock)
+lcseBlock env block arg = case block of
+  FCNamedSBlock s x0 x1 -> (lcsearg', FCNamedSBlock s x0' x1)
     where
-      (lscearg', x0') = lsceInstr env x0' (arg, [])
+      (lcsearg', x0') = lcseInstr env x0' (arg, [])
       x0'' = reverse x0'
   FCComplexBlock s fbs x0 -> let
-    (lsceargs', fbs') = foldl' (\(lscearg, rest) block -> BiFunctor.second (:rest) (lsceBlock env block lscearg))
+    (lcseargs', fbs') = foldl' (\(lcsearg, rest) block -> BiFunctor.second (:rest) (lcseBlock env block lcsearg))
       (arg, []) fbs
     fbs'' = reverse fbs'
     in
-    (lsceargs', FCComplexBlock s fbs'' x0)
+    (lcseargs', FCComplexBlock s fbs'' x0)
   FCCondBlock s fc fr fs ff fp x0 -> let
-    (arg', fc') = lsceBlock env fc arg
+    (arg', fc') = lcseBlock env fc arg
     (valenv, subs) = arg'
-    (_, fs') = lsceBlock env fs arg'
-    (_, ff') = lsceBlock env ff arg'
+    (_, fs') = lcseBlock env fs arg'
+    (_, ff') = lcseBlock env ff arg'
     in
       (arg', FCCondBlock s fc' fr fs' ff' fp x0)
   FCPartialCond s fc fr fs ff x0 -> let
-      (arg', fc') = lsceBlock env fc arg
+      (arg', fc') = lcseBlock env fc arg
       (valenv, subs) = arg'
-      (_, fs') = lsceBlock env fs arg'
-      (_, ff') = lsceBlock env ff arg'
+      (_, fs') = lcseBlock env fs arg'
+      (_, ff') = lcseBlock env ff arg'
     in
       (arg', FCPartialCond s fc' fr fs' ff' x0)
   FCWhileBlock s fb fb' fr fb2 str x0 -> (arg, block)
       
-gsce :: Environment -> (Arg,CommonValues, FCBlock) -> (Arg, CommonValues, FCBlock)
-gsce env (args, (vib, vbb), block) =
+gcse :: Environment -> (Arg,CommonValues, FCBlock) -> (Arg, CommonValues, FCBlock)
+gcse env (args, (vib, vbb), block) =
   case block of
     FCNamedSBlock s x0 x1 -> let
       (args, vib) = foldl' getValue' (args, vib) x0
@@ -180,7 +181,7 @@ gsce env (args, (vib, vbb), block) =
         rfbs = reverse fbs
         (arg', (vib',vbb'), fbs') = foldl' (\(args, (vib,vbb), res) block ->
                  let
-                   (args', (vib', vbb'), block') = gsce' (args, (vib, vbb), block)
+                   (args', (vib', vbb'), block') = gcse' (args, (vib, vbb), block)
                  in
                    (args', (DS.empty, DS.union vib' vbb), block':res))
                (args, (vib, vbb), []) rfbs
@@ -188,9 +189,9 @@ gsce env (args, (vib, vbb), block) =
         (arg', (vib',vbb'), FCComplexBlock s fbs' x0)
     FCCondBlock s fc fr fs ff fp x0 ->
       let
-        (argsf, (vibf, _), ff') = gsce' (args, (DS.empty, DS.empty), ff)
-        (argss, (vibs, _), fs') = gsce' (argsf, (DS.empty, DS.empty), fs)
-        (argsc, (vibc, _), fc') = gsce' (argss, (DS.empty, DS.empty), fc)
+        (argsf, (vibf, _), ff') = gcse' (args, (DS.empty, DS.empty), ff)
+        (argss, (vibs, _), fs') = gcse' (argsf, (DS.empty, DS.empty), fs)
+        (argsc, (vibc, _), fc') = gcse' (argss, (DS.empty, DS.empty), fc)
         vib' = DS.union vibf $ DS.union vibs vibc
         (args', list) = DS.foldl' eliminate (argsc, [])
           (DS.intersection vbb vib')
@@ -201,9 +202,9 @@ gsce env (args, (vib, vbb), block) =
       in
         (args', (vib', vbb), newBlock)
     FCPartialCond s fc fr fs ff x0 -> let
-        (argsf, (vibf, _), ff') = gsce' (args, (DS.empty, DS.empty), ff)
-        (argss, (vibs, _), fs') = gsce' (argsf, (DS.empty, DS.empty), fs)
-        (argsc, (vibc, _), fc') = gsce' (argss, (DS.empty, DS.empty), fc)
+        (argsf, (vibf, _), ff') = gcse' (args, (DS.empty, DS.empty), ff)
+        (argss, (vibs, _), fs') = gcse' (argsf, (DS.empty, DS.empty), fs)
+        (argsc, (vibc, _), fc') = gcse' (argss, (DS.empty, DS.empty), fc)
         vib' = DS.union vibf $ DS.union vibs vibc
         newCondBlock = FCPartialCond (if null list then s else "") fc' fr fs' ff' x0
         (args', list) = DS.foldl' eliminate (argsc, [])
@@ -217,7 +218,7 @@ gsce env (args, (vib, vbb), block) =
     FCWhileBlock s fb fb' fr fb2 str x0 -> (args, (vib, vbb), block)
   where
     getValue' = getValue env
-    gsce' = gsce env
+    gcse' = gcse env
     eliminate :: (Arg, [FCInstr]) -> InternalVal -> (Arg, [FCInstr])
     eliminate (arg, list) val = let
       (rd, valreg, subs) = arg
@@ -239,30 +240,36 @@ gsce env (args, (vib, vbb), block) =
 
 
 getDynamicRegisters :: (DS.Set String)-> DS.Set FCRegister -> (FCBlock) -> DS.Set FCRegister
+getDynamicRegisters _ _ _ = DS.empty
+-- getDynamicRegisters dfuns set block = case block of
+--   FCNamedSBlock s x0 x1 -> foldl' (\set (reg, fcrvalue) ->
+--                                      if reg == VoidReg then set
+--                                      else if isRValueDynamic (dfuns, set) fcrvalue
+--                                           then DS.insert reg set
+--                                           else set) (set) x0
+--   FCComplexBlock s fbs x0 -> foldl' getDynamicRegisters' set fbs
+--   FCCondBlock s fb fr fb' fb2 fb3 x0 -> foldl' getDynamicRegisters' set [fb, fb', fb2, fb3]
+--   FCPartialCond s fb fr fb' fb2 x0 -> foldl' getDynamicRegisters' set [fb, fb', fb2]
+--   FCWhileBlock s fb fb' fr fb2 str x0 -> set
+--   where
+--     getDynamicRegisters' = getDynamicRegisters dfuns
 
-getDynamicRegisters dfuns set block = case block of
-  FCNamedSBlock s x0 x1 -> foldl' (\set (reg, fcrvalue) ->
-                                     if reg == VoidReg then set
-                                     else if isRValueDynamic (dfuns, set) fcrvalue
-                                          then DS.insert reg set
-                                          else set) (set) x0
-  FCComplexBlock s fbs x0 -> foldl' getDynamicRegisters' set fbs
-  FCCondBlock s fb fr fb' fb2 fb3 x0 -> foldl' getDynamicRegisters' set [fb, fb', fb2, fb3]
-  FCPartialCond s fb fr fb' fb2 x0 -> foldl' getDynamicRegisters' set [fb, fb', fb2]
-  FCWhileBlock s fb fb' fr fb2 str x0 -> set
-  where
-    getDynamicRegisters' = getDynamicRegisters dfuns
-
-gsceOptimize :: DS.Set String-> FCBlock -> FCBlock
-gsceOptimize dynFun block =
-  undefined
+gcseOptimize :: DS.Set String-> FCBlock -> FCBlock
+gcseOptimize dynFun block =
+  snd (gcse' (argInit,block))
   where
     env = (dynFun, getDynamicRegisters dynFun DS.empty block)
-    gsce' :: (Arg, FCBlock) -> (Arg, FCBlock)
-    gsce' (args, block) =
+    gcse' :: (Arg, FCBlock) -> (Arg, FCBlock)
+    gcse' (args, block) =
       let
-        (args, _, block') = gsce env (args, (DS.empty, DS.empty), block)
+        (args, _, block') = gcse env (args, (DS.empty, DS.empty), block)
         (_, _, subs) = args
       in
         if DM.null subs then (args, block')
-        else undefined
+        else
+          let
+            lcseArgs :: LcseArg
+            lcseArgs = (DM.empty, subs)
+            (_, block) = lcseBlock env block' lcseArgs
+            in
+            gcse' (argInit, block)

@@ -179,10 +179,10 @@ gcse env (args, (vib, vbb), block) =
         rfbs = reverse fbs
         (arg', (vib',vbb'), fbs') = foldl' (\(args, (vib,vbb), res) block ->
                  let
-                   (args', (vib', vbb'), block') = gcse' (args, (vib, vbb), block)
+                   (args', (vib', _), block') = gcse' (args, (vib, vbb), block)
                  in
                    (args', (DS.empty, DS.union vib' vbb), block':res))
-               (args, (vib, vbb), []) rfbs
+               (args, (vib, DS.empty), []) rfbs
         in
         (arg', (vib',vbb'), FCComplexBlock s fbs' x0)
     FCCondBlock s fc fr fs ff fp x0 ->

@@ -137,9 +137,9 @@ lcseInstr env instrs (lcsearg, res) = case instrs of
 
 lcseBlock :: Environment -> FCBlock -> LcseArg -> (LcseArg, FCBlock)
 lcseBlock env block arg = case block of
-  FCNamedSBlock s x0 x1 -> (lcsearg', FCNamedSBlock s x0' x1)
+  FCNamedSBlock s x0 x1 -> (lcsearg', FCNamedSBlock s x0'' x1)
     where
-      (lcsearg', x0') = lcseInstr env x0' (arg, [])
+      (lcsearg', x0') = lcseInstr env x0 (arg, [])
       x0'' = reverse x0'
   FCComplexBlock s fbs x0 -> let
     (lcseargs', fbs') = foldl' (\(lcsearg, rest) block -> BiFunctor.second (:rest) (lcseBlock env block lcsearg))
@@ -177,14 +177,14 @@ gcse env (args, (vib, vbb), block) =
     FCComplexBlock s fbs x0 ->
       let
         rfbs = reverse fbs
-        (arg', (vib',vbb'), fbs') = foldl' (\(args, (vib,vbb), res) block ->
+        (arg', (acc, vib',vbb'), fbs') = foldl' (\(args, (acc, _ ,vbb), res) block ->
                  let
-                   (args', (vib', _), block') = gcse' (args, (vib, vbb), block)
+                   (args', (vib', _), block') = gcse' (args, (DS.empty, vbb), block)
                  in
-                   (args', (DS.empty, DS.union vib' vbb), block':res))
-               (args, (vib, DS.empty), []) rfbs
+                   (args', (DS.union acc vib', undefined, DS.union vib' vbb), block':res))
+               (args, (DS.empty, DS.empty, vbb), []) rfbs
         in
-        (arg', (vib',vbb'), FCComplexBlock s fbs' x0)
+        (arg', (acc, vbb'), FCComplexBlock s fbs' x0)
     FCCondBlock s fc fr fs ff fp x0 ->
       let
         (argsf, (vibf, _), ff') = gcse' (args, (DS.empty, DS.empty), ff)
@@ -199,19 +199,14 @@ gcse env (args, (vib, vbb), block) =
           FCComplexBlock s [FCNamedSBlock "" list (), newCondBlock] ()
       in
         (args', (vibc, vbb), newBlock)
-    -- FCPartialCond s fc fr fs ff x0 -> let
-    --     (argsf, (vibf, _), ff') = gcse' (args, (DS.empty, DS.empty), ff)
-    --     (argss, (vibs, _), fs') = gcse' (argsf, (DS.empty, DS.empty), fs)
-    --     (argsc, (vibc, _), fc') = gcse' (argss, (DS.empty, DS.empty), fc)
-    --     vib' = DS.union vibf $ DS.union vibs vibc
-    --     newCondBlock = FCPartialCond (if null list then s else "") fc' fr fs' ff' x0
-    --     (args', list) = DS.foldl' eliminate (argsc, [])
-    --       (DS.intersection vbb vib')
-    --     newBlock = if null list then newCondBlock
-    --       else
-    --       FCComplexBlock s [FCNamedSBlock "" list (), newCondBlock] ()
-    --   in
-    --     (args', (vib', vbb), newBlock)
+    FCPartialCond s fc fr fs ff x0 -> let
+        (argsf, (vibf, _), ff') = gcse' (args, (DS.empty, DS.empty), ff)
+        (argss, (vibs, _), fs') = gcse' (argsf, (DS.empty, DS.empty), fs)
+        (argsc, (vibc, _), fc') = gcse' (argss, (DS.empty, DS.empty), fc)
+        vib' = DS.union vibf $ DS.union vibs vibc
+          FCComplexBlock s [FCNamedSBlock "" list (), newCondBlock] ()
+      in
+        (args', (vib', vbb), newBlock)
     FCWhileBlock s fb fb' fr fb2 str x0 -> (args, (vib, vbb), block)
     _ -> undefined
   where
@@ -225,13 +220,13 @@ gcse env (args, (vib, vbb), block) =
       (firstR, rest) = case regs of
                  (r1:r2:rest) -> (r1, r2:rest)
                  _ -> error "List has less than two elements"
-      definition = error "Value in set not in map" $ DM.lookup firstR rd
+      definition = error "Value in set not in map" `fromMaybe` DM.lookup firstR rd
       reg' = case firstR of
         (Reg s) -> Reg ("g" ++ s)
         _ -> undefined
       arg' = _arg
         (DM.insert reg' definition rd)
-        (DM.delete val valreg)
+        (DM.insert val [reg'] valreg)
         (foldl' (\map r -> DM.insert r reg' map) subs regs)
       list' = (reg', definition):list
       in
@@ -262,7 +257,7 @@ gcseOptimize dynFun block =
     gcse' (args, block) =
       let
         (args', _, block') = gcse env (args, (DS.empty, DS.empty), block)
-        (_, _, subs) = args
+        (_, _, subs) = args'
       in
         if DM.null subs then (args', block')
         else

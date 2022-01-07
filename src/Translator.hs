@@ -683,7 +683,7 @@ getCalledFunctions (IFun _ _ _ iblock) =
     getCalledFunctionInstr :: IStmt -> DS.Set String -> DS.Set String
     getCalledFunctionInstr is set = case is of
       IBStmt ib -> getCalledFunctionB ib set
-      IDecl iis -> undefined
+      IDecl iis -> getCalledFunctionsItems iis set
       IAss s ie -> getCalledFunctionExpr ie set
       IIncr s -> set
       IDecr s -> set

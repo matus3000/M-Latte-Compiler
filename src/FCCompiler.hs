@@ -526,27 +526,6 @@ getConstStringReg s = do
   modify (fccPutConstants consEnb)
   return et
 
--- putConstState :: ConstStringEnv -> FCC ()
--- putConstState newEnv = modifyConstState (const newEnv)
--- modifyConstState :: (ConstStringEnv -> ConstStringEnv) -> FCC ()
--- modifyConstState fun = modify (\(FCCState regst varst constenv blockst) -> FCCState regst varst (fun constenv) blockst)
-
--- fccEmplaceConstString :: String -> FCC String
--- fccEmplaceConstString x = do
---   constenv <- constEnv <$> get
---   let et = x `DM.lookup` stringMap constenv
---       nextid = nextEtId constenv
---   case et of
---     Nothing -> putConstState (ConstStringEnv (DM.insert x nextid (stringMap constenv)) (1 + nextid)) >>
---       return ("C" ++ show nextid)
---     Just n -> return $ "C" ++ show n
-
--- instance ExpToFCStateMonad FCC where
---   lookupStringName x = fccEmplaceConstString x
-
--- lookupRegister :: FCRegister -> FCCompiler FCType
-
-
 openFunBlock :: String -> IDef.LType -> [(String, IDef.LType)] -> FCCompiler [(FCType, FCRegister)]
 openFunBlock fname lret args =
   do

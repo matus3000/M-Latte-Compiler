@@ -8,7 +8,6 @@
 -- TO DO:
 -- a) Zamienić mapM getVar foldable na getVars
 -- b) Sprawić, żeby return nie otrzymawało normalnego rejestru, tylko rejestr typu void.
--- c) Zmienić COND na CONDElse gdzie jedynyną instrukcją jest instrukcja pusta. W Translator.hs
 module FCCompiler where
 
 import Prelude
@@ -838,9 +837,6 @@ type GSCEValRegMap = DM.Map GSCEInternalVal [FCRegister]
 type GSCERegToDepsMap = DM.Map FCRegister DependantRegisters
 type GSCERegToRegMap = DM.Map FCRegister FCRegister
 
-type GSCEMonad1State = (GSCEValRegMap, GSCERegToDepsMap)
-type GSCEMonad1 = State GSCEMonad1State
-type GSCEFCFun1 = FCFun' FCInstr (DS.Set GSCEInternalVal)
 
 type GSCEFCBlock1 = FCBlock' FCInstr (DS.Set GSCEInternalVal)
 type GSCEFCBlock2 = FCBlock' FCInstr (DS.Set GSCEInternalVal, DS.Set GSCEInternalVal)
@@ -866,11 +862,6 @@ swapRegister r1 r2 instr = case instr of
 
 gsceFCRValToInVal :: FCRValue -> GSCEInternalVal
 gsceFCRValToInVal = undefined
-
-gsceS1RegValMap :: GSCEMonad1State -> GSCEValRegMap
-gsceS1RegValMap = fst
-gsceS1RegToDepsMap :: GSCEMonad1State -> GSCERegToDepsMap
-gsceS1RegToDepsMap = snd
 
 convertBlock :: b -> FCBlock' a c -> FCBlock' a b
 convertBlock = undefined
@@ -978,9 +969,148 @@ gsceOptimize common prev z = do
       put (regdef', valreg, regtdeps, regreg', ssa')
       return bb'
 
+------------------------------ Loop power reduction -----------------------------------------------
+
+reduce :: (DS.Set SRExprAtom, FCBlock) -> (DS.Set SRExprAtom, FCBlock)
+reduce (set, block) = case block of
+  FCNamedSBlock s instrs x1 -> (foldl' getAtoms set instrs, block)
+  FCComplexBlock s fbs x0 -> let
+    (set', fbs') = foldl' (\(!set, blockList) block ->
+                  BiFunctor.second (:blockList) (reduce (set, block)))
+        (set, []) fbs
+    in
+    (set', FCComplexBlock s (reverse fbs') x0)
+  FCCondBlock s fc fr fs ff fp x0 ->
+    let
+      (_, fs') = reduce (set, fs)
+      (_, ff') = reduce (set, ff)
+      set'     = getAtomsBlock set fc
+      set''     = getAtomsBlock set' fp
+    in
+      (set'', FCCondBlock s fc fr fs' ff' fp x0)
+  FCPartialCond s fc fr fs ff x0 ->
+    let
+      (_, fs') = reduce (set, fs)
+      (_, ff') = reduce (set, ff)
+      set'     = getAtomsBlock set fc
+    in
+      (set', FCPartialCond s fc fr fs' ff' x0)
+  FCWhileBlock s fpost feval fr fsuccess str x0 ->
+    let
+      setForLoop = getAtomsBlock set fpost
+      setForfsuccess = getAtomsBlock setForLoop feval
+      (_, fsuccess') = reduce (setForfsuccess, fsuccess)
+      r1 = applyConvertToBlock setForLoop DM.empty feval
+      r2 = applyConvertToBlock setForLoop r1 fsuccess
+      -- substitutions = 
+      in
+      undefined
+  where
+    firstPhi :: DM.Map FCRegister SRExpr -> [(FCRegister, SRExpr)] ->
+      FCInstr -> [(FCRegister, SRExpr)]
+    firstPhi map res (i0, rval) = case rval of
+      FCPhi ft list -> let
+        i1 = fst $ head (if not (null list) then list else error "Empty phi list")
+        i0Val = ST (DM.fromList ([(i0,1)])) 0
+        i1Val = error "1018 pusta mapa" `fromMaybe` DM.lookup i1 map
+        diff = srsub i1Val i0Val
+        in
+        case diff of
+          ST map n -> if DM.null map then (i0, (ST (DM.fromList [(i0,1)]) n)):res else (i0, SRDynamic):res
+          _ -> (i0, SRDynamic):res
+      _ -> res
+    getPhi :: FCBlock -> [FCRegister] -> [FCRegister]
+    getPhi fcblock rest = case fcblock of
+      FCNamedSBlock s x0 x1 -> foldr (\(reg,instr) rest ->
+                                        case instr of
+                                          FCPhi{} -> reg:rest
+                                          _ -> rest ) rest x0
+      FCComplexBlock s fbs x0 -> foldr getPhi rest fbs
+      _ -> error "Malformed block with PHI"
+    convertFCReg  :: DS.Set SRExprAtom -> DM.Map FCRegister SRExpr ->
+      FCRegister -> SRExpr
+    convertFCReg set map fcreg = case fcreg of
+      VoidReg -> error "ConvertFCReg"
+      Reg s -> if DS.member fcreg set
+        then ST (DM.fromList [(fcreg, 1)]) 0
+        else SRDynamic `fromMaybe` DM.lookup fcreg map
+      ConstString n -> error "Nonsense"
+      LitInt n -> ST DM.empty n
+      LitBool b -> error "Nonsene"
+      Et s -> error "Nonsense"
+    convertInstr :: DS.Set SRExprAtom -> DM.Map FCRegister SRExpr ->
+      FCInstr -> DM.Map FCRegister SRExpr
+    convertInstr atoms map (reg, instr)  = case (reg, instr) of
+      (VoidReg, _) -> map
+      (Reg _, instr) -> case instr of
+        FunCall ft s x0 -> DM.insert reg SRDynamic map
+        FCBinOp ft fbo fr fr' -> case fbo of
+          Add -> DM.insert reg (sradd (convertFCReg' fr) (convertFCReg' fr')) map
+          Sub -> DM.insert reg (srsub (convertFCReg' fr) (convertFCReg' fr')) map
+          Div -> DM.insert reg (srdiv (convertFCReg' fr) (convertFCReg' fr')) map
+          Mul -> DM.insert reg (srmul (convertFCReg' fr) (convertFCReg' fr')) map
+          Mod -> DM.insert reg SRDynamic map
+          _ -> map
+        FCUnOp ft fuo fr -> case fuo of
+          Neg -> DM.insert reg (srimul (-1) (convertFCReg' reg)) map
+          BoolNeg -> map
+        FCPhi ft x0 -> DM.insert reg SRDynamic map
+        BitCast ft fr ft' -> map
+        GetPointer ft fr fr' -> map
+        Return ft m_fr -> map
+        FCEmptyExpr -> map
+        FCFunArg ft s n -> map
+        FCJump fr -> map
+        FCCondJump fr fr' fr2 -> map
+        where
+          convertFCReg' = convertFCReg atoms map
+    applyConvertToBlock :: DS.Set SRExprAtom -> DM.Map FCRegister SRExpr ->
+      FCBlock -> DM.Map FCRegister SRExpr
+    applyConvertToBlock set map fcblock = case fcblock of
+      FCNamedSBlock s x0 x1 -> foldl' (convertInstr set) map x0
+      FCComplexBlock s fbs x0 -> foldl' applyConvertToBlock' map fbs
+      FCCondBlock s fc fr fs ff fb3 x0 -> foldl' applyConvertToBlock' map [fc, fs, ff]
+      FCPartialCond s fc fr fs ff x0 -> foldl' applyConvertToBlock' map [fc, fs, ff]
+      FCWhileBlock s fb fb' fr fb2 str x0 -> map
+      where
+        applyConvertToBlock' = applyConvertToBlock set
+    getAtoms :: DS.Set SRExprAtom -> FCInstr -> DS.Set SRExprAtom
+    getAtoms !set (reg, instr) = DS.insert reg set
+    getAtomsBlock :: DS.Set SRExprAtom -> FCBlock -> DS.Set SRExprAtom
+    getAtomsBlock set block = case block of
+      FCNamedSBlock s instrs x1 -> foldl' getAtoms set instrs
+      FCComplexBlock s fbs x0 -> foldl' getAtomsBlock set fbs
+      FCCondBlock s fb fr fb' fb2 fb3 x0 -> foldl' getAtomsBlock set [fb, fb', fb2, fb3]
+      FCPartialCond s fb fr fb' fb2 x0 -> foldl' getAtomsBlock set [fb, fb', fb2]
+      FCWhileBlock s fb fb' fr fb2 str x0 -> error "Muszę się zastanowić"
+
 ------------------------------ MyExpr --------------------------------------------------------------
 
+srexprToFCR :: SSARegisterAllocator -> SRExpr -> (SSARegisterAllocator, FCRegister, [FCInstr])
+srexprToFCR ssa srexpr =
+  case srexpr of
+    SRDynamic -> error "This should not happen"
+    ST map n -> foldl'
+      (\(ssa,prevreg, rest) (reg, mul) ->
+          let
+            fcr = fcmul reg mul
+            (ssa', resReg) = _nextRegister ssa
+            rest' = (resReg, fcr):rest
+            (ssa'', resReg') = _nextRegister ssa
+            rest'' = (resReg', fcradd prevreg resReg):rest'
+          in
+            if prevreg == (LitInt 0)
+            then (ssa', resReg, rest')
+            else (ssa'', resReg', rest''))
+      (ssa,(LitInt n), []) (DM.toList map)
+
+  where
+    fcmul :: FCRegister -> Int -> FCRValue
+    fcmul x y = FCBinOp Int Mul x (LitInt y)
+    fcradd x y = FCBinOp Int Add x y
+
 data SRExpr' a = ST (DM.Map a Int) Int | SRDynamic
+  deriving (Eq, Ord)
 type SRExpr = SRExpr' FCRegister
 
 f :: (Int -> Int -> Int) -> SRExpr -> SRExpr -> SRExpr
@@ -1007,7 +1137,21 @@ sradd :: SRExpr -> SRExpr -> SRExpr
 srsub :: SRExpr -> SRExpr -> SRExpr
 sradd = f (+)
 srsub = f (-)
-srmul = f (*)
+
+srdiv :: SRExpr -> SRExpr -> SRExpr
+srdiv x@(ST m1 i1) y@(ST m2 i2) = SRDynamic
+srdiv x y = SRDynamic
+srmul :: SRExpr -> SRExpr -> SRExpr
+srmul x@(ST m1 i1) y@(ST m2 i2) =
+  if (DM.null m1)
+  then srimul i1 y
+  else
+    if (DM.null m2)
+    then srimul i2 x
+    else SRDynamic
+srmul _ _ = SRDynamic
+srimul :: Int -> SRExpr -> SRExpr
+srimul n = f (*) (ST DM.empty n)
 
 sreq :: SRExpr -> SRExpr -> Bool
 sreq s1 s2 = case (s1, s2) of
@@ -1019,7 +1163,7 @@ substitute :: (Ord a ) => SRExprAtom' a -> SRExpr' (SRExprAtom' a) -> SRExpr' (S
 substitute atom subst srexpr = case (subst, srexpr) of
   (SRDynamic, _) -> SRDynamic
   (_, SRDynamic) -> SRDynamic
-  (ST m1 i1, ST m2 i2) -> 
+  (ST m1 i1, ST m2 i2) ->
     case DM.lookup atom m2 of
       Nothing -> srexpr
       Just multiplier -> ST newMap (i1 * multiplier + i2)

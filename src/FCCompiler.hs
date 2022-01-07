@@ -38,6 +38,7 @@ import qualified Control.Arrow as BiFunctor
 import qualified VariableEnvironment as Ve
 import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 import Data.List (nub)
+import Gsce (gcseOptimize)
 
 
 
@@ -426,8 +427,12 @@ translateFun :: Tr.IFun -> FCCompiler FCFun
 translateFun (Tr.IFun s lt lts ib) = do
   withOpenFunBlock s lt lts $ \res ->
     do
-      fbody <- translateBlock s ib bbNew
-      return $ FCFun' {name = s, retType = convert lt, args = res, FCT.body = bbBuildAnonymous fbody}
+      fbodyBB <- translateBlock s ib bbNew
+      dynamicFuns <- asks fccfeDynamicFuns
+      let
+        fbody = bbBuildAnonymous fbodyBB
+        fbody' = gcseOptimize dynamicFuns fbody
+      return $ FCFun' {name = s, retType = convert lt, args = res, FCT.body = fbody'}
 
 
 translateProg :: [Tr.IFun] -> FCCompiler [FCFun]
@@ -687,11 +692,6 @@ withProtectedVars vars f = do
   endprotection
   return res
 
-isFunctionStatic :: String -> FCCompiler Bool
-isFunctionStatic fname = error "Unimplemented"
-getFunctionType :: String -> FCCompiler FCType
-getFunctionType fname = error "Unimplemented"
-
 generateLabel :: FCCompiler String
 generateLabel = do
   la <- gets fccLabelAlloc
@@ -826,148 +826,148 @@ optimizeLoop dfuns fcblock  = case fcblock of
 
                ------------- LCSE - GCSE ------------
 
-data GSCEInternalVal = GSCEIVFCR FCRValue
-  deriving (Eq, Ord)
+-- data GSCEInternalVal = GSCEIVFCR FCRValue
+--   deriving (Eq, Ord)
 
-type FCInternal1 = FCBlock' (FCInstr) ((DS.Set GSCEInternalVal))
+-- type FCInternal1 = FCBlock' (FCInstr) ((DS.Set GSCEInternalVal))
 
-type DependantRegisters = DS.Set FCRegister
-type GSCERegDefMap = DM.Map FCRegister FCRValue
-type GSCEValRegMap = DM.Map GSCEInternalVal [FCRegister]
-type GSCERegToDepsMap = DM.Map FCRegister DependantRegisters
-type GSCERegToRegMap = DM.Map FCRegister FCRegister
+-- type DependantRegisters = DS.Set FCRegister
+-- type GSCERegDefMap = DM.Map FCRegister FCRValue
+-- type GSCEValRegMap = DM.Map GSCEInternalVal [FCRegister]
+-- type GSCERegToDepsMap = DM.Map FCRegister DependantRegisters
+-- type GSCERegToRegMap = DM.Map FCRegister FCRegister
 
 
-type GSCEFCBlock1 = FCBlock' FCInstr (DS.Set GSCEInternalVal)
-type GSCEFCBlock2 = FCBlock' FCInstr (DS.Set GSCEInternalVal, DS.Set GSCEInternalVal)
-type GSCEMonad2State = (GSCERegDefMap, GSCEValRegMap, GSCERegToDepsMap,
-                        GSCERegToRegMap, SSARegisterAllocator)
-type GSCEMonad2 = State GSCEMonad2State
+-- type GSCEFCBlock1 = FCBlock' FCInstr (DS.Set GSCEInternalVal)
+-- type GSCEFCBlock2 = FCBlock' FCInstr (DS.Set GSCEInternalVal, DS.Set GSCEInternalVal)
+-- type GSCEMonad2State = (GSCERegDefMap, GSCEValRegMap, GSCERegToDepsMap,
+--                         GSCERegToRegMap, SSARegisterAllocator)
+-- type GSCEMonad2 = State GSCEMonad2State
 
-swapRegister :: FCRegister -> FCRegister -> FCRValue -> FCRValue
-swapRegister r1 r2 instr = case instr of
-  FunCall ft s x0 -> FunCall ft s (map (BiFunctor.second subst) x0)
-  FCBinOp ft fbo fr fr' -> FCBinOp ft fbo (subst fr) (subst fr')
-  FCUnOp ft fuo fr -> FCUnOp ft fuo (subst fr)
-  FCPhi ft x0 -> FCPhi ft (map (BiFunctor.first subst) x0)
-  BitCast ft fr ft' -> BitCast ft fr ft'
-  GetPointer ft fr fr' -> GetPointer ft fr fr'
-  Return ft m_fr -> Return ft (subst <$> m_fr)
-  FCEmptyExpr -> FCEmptyExpr
-  FCFunArg ft s n -> error "FCFunArg"
-  FCJump fr -> error "FCJump"
-  FCCondJump fr fr' fr2 -> error "FCJump"
-  where
-    subst x = if x == r1 then r2 else x
+-- swapRegister :: FCRegister -> FCRegister -> FCRValue -> FCRValue
+-- swapRegister r1 r2 instr = case instr of
+--   FunCall ft s x0 -> FunCall ft s (map (BiFunctor.second subst) x0)
+--   FCBinOp ft fbo fr fr' -> FCBinOp ft fbo (subst fr) (subst fr')
+--   FCUnOp ft fuo fr -> FCUnOp ft fuo (subst fr)
+--   FCPhi ft x0 -> FCPhi ft (map (BiFunctor.first subst) x0)
+--   BitCast ft fr ft' -> BitCast ft fr ft'
+--   GetPointer ft fr fr' -> GetPointer ft fr fr'
+--   Return ft m_fr -> Return ft (subst <$> m_fr)
+--   FCEmptyExpr -> FCEmptyExpr
+--   FCFunArg ft s n -> error "FCFunArg"
+--   FCJump fr -> error "FCJump"
+--   FCCondJump fr fr' fr2 -> error "FCJump"
+--   where
+--     subst x = if x == r1 then r2 else x
 
-gsceFCRValToInVal :: FCRValue -> GSCEInternalVal
-gsceFCRValToInVal = undefined
+-- gsceFCRValToInVal :: FCRValue -> GSCEInternalVal
+-- gsceFCRValToInVal = undefined
 
-convertBlock :: b -> FCBlock' a c -> FCBlock' a b
-convertBlock = undefined
+-- convertBlock :: b -> FCBlock' a c -> FCBlock' a b
+-- convertBlock = undefined
 
-joinBlock :: FCBlock' a b ->  FCBlock' a b ->  FCBlock' a b
-joinBlock = undefined
+-- joinBlock :: FCBlock' a b ->  FCBlock' a b ->  FCBlock' a b
+-- joinBlock = undefined
 
-gsceBlock :: DS.Set GSCEInternalVal -> FCBlock' FCInstr a -> GSCEMonad2 GSCEFCBlock2
-gsceBlock set fcblock = case fcblock of
-  FCNamedSBlock s x0 a -> do
-    vals <- h x0
-    return $ FCNamedSBlock s x0 (vals, set)
-  FCComplexBlock s fbs a -> do
-    (vals, fbs') <- gsceBlockList set fbs
-    return $ FCComplexBlock s fbs' (vals, set)
-  FCCondBlock s fc fr fs ff fp a -> do
-    (set', list) <- gsceBlockList DS.empty [fs, ff]
-    (vals, (fc', fs', ff')) <- case list of
-      [fs', ff'] -> do
-        fc' <- gsceBlock DS.empty fc
-        return (DS.union (fst $ addition fc') set', (fc', fs', ff'))
-      [fx', fs', ff'] -> do
-        fc' <- gsceBlock DS.empty fc
-        return (DS.union (fst $ addition fc') set', ( joinBlock fx' fc', fs', ff' ))
-      _ -> error $ "List has length: " ++ show (length list)
-    return $ FCCondBlock s fc' fr fs' ff' (convertBlock (DS.empty, DS.empty) fp) (vals, set)
-  FCPartialCond s fc fr fs ff a -> do
-    (set', list) <- gsceBlockList DS.empty [fs, ff]
-    (vals, (fc', fs', ff')) <- case list of
-      [fs', ff'] -> do
-        fc' <- gsceBlock DS.empty fc
-        return (DS.union (fst $ addition fc') set', (fc', fs', ff'))
-      [fx', fs', ff'] -> do
-        fc' <- gsceBlock DS.empty fc
-        return (DS.union (fst $ addition fc') set', ( joinBlock fx' fc', fs', ff' ))
-      _ -> error $ "List has length: " ++ show (length list)
-    return $ FCPartialCond s fc' fr fs' ff' (vals, set)
-  FCWhileBlock s fp fce fr fs str a -> do
-    fce' <- gsceBlock DS.empty fce
-    fs' <- gsceBlock DS.empty fs
-    return $ FCWhileBlock s (convertBlock (DS.empty, DS.empty) fp) fce' fr fs' str (DS.empty, set)
-  where
-      h :: FCSimpleBlock -> GSCEMonad2 (DS.Set GSCEInternalVal)
-      h instr = do
-        (regdef, valreg, regtdeps, regreg, ssa) <- get
-        let (regdef', valreg', set) = foldl'
-              f1
-              (regdef, valreg, DS.empty)
-              instr
-        put (regdef, valreg', regtdeps, regreg, ssa)
-        return set
-          where
-            f1 :: (GSCERegDefMap, GSCEValRegMap, DS.Set GSCEInternalVal) ->
-              FCInstr -> (GSCERegDefMap, GSCEValRegMap, DS.Set GSCEInternalVal)
-            f1 (!regdef, !rvmap, !set) fi@(reg, inst) =
-              if reg == VoidReg then (regdef, rvmap, set)
-                else let
-                inval = gsceFCRValToInVal inst
-                regdef' = DM.insert reg inst regdef
-                set' = DS.insert inval set
-                rvmap' = DM.insert inval
-                         (reg:([]`fromMaybe` DM.lookup inval rvmap)) rvmap
-                in
-                  (regdef', rvmap', set')
-gsceBlockList :: DS.Set GSCEInternalVal -> [FCBlock' FCInstr a] -> GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
+-- gsceBlock :: DS.Set GSCEInternalVal -> FCBlock' FCInstr a -> GSCEMonad2 GSCEFCBlock2
+-- gsceBlock set fcblock = case fcblock of
+--   FCNamedSBlock s x0 a -> do
+--     vals <- h x0
+--     return $ FCNamedSBlock s x0 (vals, set)
+--   FCComplexBlock s fbs a -> do
+--     (vals, fbs') <- gsceBlockList set fbs
+--     return $ FCComplexBlock s fbs' (vals, set)
+--   FCCondBlock s fc fr fs ff fp a -> do
+--     (set', list) <- gsceBlockList DS.empty [fs, ff]
+--     (vals, (fc', fs', ff')) <- case list of
+--       [fs', ff'] -> do
+--         fc' <- gsceBlock DS.empty fc
+--         return (DS.union (fst $ addition fc') set', (fc', fs', ff'))
+--       [fx', fs', ff'] -> do
+--         fc' <- gsceBlock DS.empty fc
+--         return (DS.union (fst $ addition fc') set', ( joinBlock fx' fc', fs', ff' ))
+--       _ -> error $ "List has length: " ++ show (length list)
+--     return $ FCCondBlock s fc' fr fs' ff' (convertBlock (DS.empty, DS.empty) fp) (vals, set)
+--   FCPartialCond s fc fr fs ff a -> do
+--     (set', list) <- gsceBlockList DS.empty [fs, ff]
+--     (vals, (fc', fs', ff')) <- case list of
+--       [fs', ff'] -> do
+--         fc' <- gsceBlock DS.empty fc
+--         return (DS.union (fst $ addition fc') set', (fc', fs', ff'))
+--       [fx', fs', ff'] -> do
+--         fc' <- gsceBlock DS.empty fc
+--         return (DS.union (fst $ addition fc') set', ( joinBlock fx' fc', fs', ff' ))
+--       _ -> error $ "List has length: " ++ show (length list)
+--     return $ FCPartialCond s fc' fr fs' ff' (vals, set)
+--   FCWhileBlock s fp fce fr fs str a -> do
+--     fce' <- gsceBlock DS.empty fce
+--     fs' <- gsceBlock DS.empty fs
+--     return $ FCWhileBlock s (convertBlock (DS.empty, DS.empty) fp) fce' fr fs' str (DS.empty, set)
+--   where
+--       h :: FCSimpleBlock -> GSCEMonad2 (DS.Set GSCEInternalVal)
+--       h instr = do
+--         (regdef, valreg, regtdeps, regreg, ssa) <- get
+--         let (regdef', valreg', set) = foldl'
+--               f1
+--               (regdef, valreg, DS.empty)
+--               instr
+--         put (regdef, valreg', regtdeps, regreg, ssa)
+--         return set
+--           where
+--             f1 :: (GSCERegDefMap, GSCEValRegMap, DS.Set GSCEInternalVal) ->
+--               FCInstr -> (GSCERegDefMap, GSCEValRegMap, DS.Set GSCEInternalVal)
+--             f1 (!regdef, !rvmap, !set) fi@(reg, inst) =
+--               if reg == VoidReg then (regdef, rvmap, set)
+--                 else let
+--                 inval = gsceFCRValToInVal inst
+--                 regdef' = DM.insert reg inst regdef
+--                 set' = DS.insert inval set
+--                 rvmap' = DM.insert inval
+--                          (reg:([]`fromMaybe` DM.lookup inval rvmap)) rvmap
+--                 in
+--                   (regdef', rvmap', set')
+-- gsceBlockList :: DS.Set GSCEInternalVal -> [FCBlock' FCInstr a] -> GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
 
-gsceBlockList initSet = foldrM (flip f) (initSet , [])
-  where
-    f :: (DS.Set GSCEInternalVal, [GSCEFCBlock2]) -> (FCBlock' FCInstr a)
-      -> GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
-    f (set, rest) fblock = do
-      fblock' <- gsceBlock set fblock
-      let fblockvals = fst $ addition fblock'
-          common = DS.intersection common set
-      if null common
-        then return (DS.union fblockvals set, fblock':rest)
-        else gsceOptimize common (DS.union fblockvals set) (fblock':rest)
+-- gsceBlockList initSet = foldrM (flip f) (initSet , [])
+--   where
+--     f :: (DS.Set GSCEInternalVal, [GSCEFCBlock2]) -> (FCBlock' FCInstr a)
+--       -> GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
+--     f (set, rest) fblock = do
+--       fblock' <- gsceBlock set fblock
+--       let fblockvals = fst $ addition fblock'
+--           common = DS.intersection common set
+--       if null common
+--         then return (DS.union fblockvals set, fblock':rest)
+--         else gsceOptimize common (DS.union fblockvals set) (fblock':rest)
 
-gsceOptimize :: DS.Set GSCEInternalVal -> DS.Set GSCEInternalVal
-             -> [GSCEFCBlock2] ->  GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
-gsceOptimize common prev z = do
-  bb <- f1 (DS.toList common) []
-  let newBlock = FCNamedSBlock "" (reverse bb) (common, prev)
-  return (prev, newBlock:z)
-  where
-    f1 :: [GSCEInternalVal] -> [FCInstr] ->GSCEMonad2 [FCInstr]
-    f1 list bb = do
-      (regdef, valreg, regtdeps, regreg, ssa) <- get
-      let
-        (regdef', regreg', ssa', bb') = foldl
-          (\(regdef, regreg, ssa, bb) val->
-             let
-               regs = unpackMaybe $ val `DM.lookup` valreg
-               (fst, rest) = case regs of
-                 (fst:snd:rest) -> (fst, snd:rest)
-                 _ -> error "List has less than two elements"
-               (ssa', reg) = _nextRegister ssa
-               definition = unpackMaybe $ DM.lookup fst regdef
-               bb' = (reg, definition):bb
-               regdef' = DM.insert reg definition regdef
-               regreg' = foldl (\regreg old -> DM.insert old reg regreg') regreg regs
-               in
-               (regdef, regreg', ssa', bb')
-              ) (regdef, regreg, ssa, bb) list
-      put (regdef', valreg, regtdeps, regreg', ssa')
-      return bb'
+-- gsceOptimize :: DS.Set GSCEInternalVal -> DS.Set GSCEInternalVal
+--              -> [GSCEFCBlock2] ->  GSCEMonad2 (DS.Set GSCEInternalVal, [GSCEFCBlock2])
+-- gsceOptimize common prev z = do
+--   bb <- f1 (DS.toList common) []
+--   let newBlock = FCNamedSBlock "" (reverse bb) (common, prev)
+--   return (prev, newBlock:z)
+--   where
+--     f1 :: [GSCEInternalVal] -> [FCInstr] ->GSCEMonad2 [FCInstr]
+--     f1 list bb = do
+--       (regdef, valreg, regtdeps, regreg, ssa) <- get
+--       let
+--         (regdef', regreg', ssa', bb') = foldl
+--           (\(regdef, regreg, ssa, bb) val->
+--              let
+--                regs = unpackMaybe $ val `DM.lookup` valreg
+--                (fst, rest) = case regs of
+--                  (fst:snd:rest) -> (fst, snd:rest)
+--                  _ -> error "List has less than two elements"
+--                (ssa', reg) = _nextRegister ssa
+--                definition = unpackMaybe $ DM.lookup fst regdef
+--                bb' = (reg, definition):bb
+--                regdef' = DM.insert reg definition regdef
+--                regreg' = foldl (\regreg old -> DM.insert old reg regreg') regreg regs
+--                in
+--                (regdef, regreg', ssa', bb')
+--               ) (regdef, regreg, ssa, bb) list
+--       put (regdef', valreg, regtdeps, regreg', ssa')
+--       return bb'
 
 ------------------------------ Loop power reduction -----------------------------------------------
 

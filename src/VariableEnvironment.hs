@@ -23,7 +23,7 @@ class (Ord key) => CVariableEnvironment a key value | a -> key value where
   protectVars_ :: (Foldable t) => t key -> a -> a
   protectVars :: [key] -> [value] -> a -> a
   endProtection :: a -> a
-  undeclareVar :: key -> a -> a
+  -- undeclareVar :: key -> a -> a
 
 newVarEnv :: (Ord vartype) => VarEnv vartype value
 newVarEnv = VarEnv DM.empty [] []
@@ -33,13 +33,13 @@ data VarEnv vartype value = VarEnv {varmap :: DM.Map vartype [value],
                                          redeclaredVars :: [DS.Set vartype]
                                        }
 instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
-  undeclareVar key (VarEnv vmap modvars redvars) =
-    let x = [] `fromMaybe` DM.lookup key vmap
-        xtail = if null x then error "UndeclareVar: Variable is not declared"
-          else tail x
-    in
-      if (null modvars  || null redvars) then error "Open closure! Default value is closed"
-      else VarEnv (DM.insert key xtail vmap) ((DS.delete key $ head modvars):(tail modvars)) ((DS.delete key $ head redvars):(tail redvars))
+  -- undeclareVar key (VarEnv vmap modvars redvars) =
+  --   let x = [] `fromMaybe` DM.lookup key vmap
+  --       xtail = if null x then error "UndeclareVar: Variable is not declared"
+  --         else tail x
+  --   in
+  --     if (null modvars  || null redvars) then error "Open closure! Default value is closed"
+  --     else VarEnv (DM.insert key xtail vmap) ((DS.delete key $ head modvars):(tail modvars)) ((DS.delete key $ head redvars):(tail redvars))
   setVar key value (VarEnv vmap modvars redvars) =
     let x = [] `fromMaybe` DM.lookup key vmap
         hmod = if (null modvars) then error "XX" else (head modvars)
@@ -56,7 +56,9 @@ instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
         VarEnv (DM.insert key (value:x) vmap) modvars (DS.insert key currentRed : tail redvars)
       else
         venv
-  containsVar key (VarEnv vmap modvars redvars) = DM.member key vmap
+  containsVar key varenv@(VarEnv vmap modvars redvars) =  case lookupVar key varenv of
+                                                            Just _ -> True
+                                                            Nothing -> False
   lookupVars keys (VarEnv vmap modvars redvars) = map (\key -> head <$> DM.lookup key vmap) keys
   lookupVar key (VarEnv vmap modvars redvars) = case DM.lookup key vmap of
     Nothing -> Nothing

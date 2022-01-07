@@ -7,7 +7,6 @@ module FCCompilerState (VariableEnvironment(..),
                         -- LLRegisterState(..),
                         ConstantsEnvironment(..)) where
 
-import FCCompilerTypes
 -- import Control.Monad.State.Strict
 -- import Data.Map.Strict (Map)
 

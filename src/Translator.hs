@@ -47,6 +47,7 @@ import VariableEnvironment(CVariableEnvironment(..), VarEnv(..), newVarEnv)
 import DynFlags (GeneralFlag(Opt_BuildDynamicToo))
 import qualified Control.Monad as DS
 import qualified VariableEnvironment as VE
+import qualified VariableEnvironment as DS
 
 type VariableEnvironment = VarEnv String IType
 
@@ -751,7 +752,7 @@ data FunctionMetadata = FM {usedExternal :: DS.Set String,
 
 
 type DynamicFunction = DS.Set String
-type DynamicVariables = DS.Set String
+type DynamicVariables = VE.VarEnv String Bool
 type OptimizeLoopEnv = DynamicFunction
 type OptimizeLoopSt = (Int, VarEnv String String, DynamicVariables, DummyAssignments)
 type DummyAssignments = [(String, IExpr)]
@@ -763,9 +764,19 @@ oleIsFunStatic s env = not $ DS.member s env
 olsLookup :: String -> OptimizeLoopSt -> Maybe String
 olsLookup s (_, venv, _, _) = VE.lookupVar s venv
 olsIsDynamic :: String -> OptimizeLoopSt -> Bool
-olsIsDynamic s (_, _, set, _) = DS.member s set
-olsMarkAsDynamic :: String -> OptimizeLoopSt -> OptimizeLoopSt
-olsMarkAsDynamic s (m1, m2, set, m3) = (m1, m2, DS.insert s set, m3)
+olsIsDynamic s (_, _, set, _) =  VE.containsVar s set
+
+olsDeclareAsDynamic :: String -> OptimizeLoopSt -> OptimizeLoopSt
+olsDeclareAsDynamic s (m1, m2, set, m3) = (m1, m2, DS.declareVar s True set, m3)
+olsDeclareAsStatic :: String -> OptimizeLoopSt -> OptimizeLoopSt
+olsDeclareAsStatic s (m1, m2, set, m3) = (m1, m2, DS.declareVar s False set, m3)
+
+olsSetAsDynamic :: String -> OptimizeLoopSt -> OptimizeLoopSt
+olsSetAsDynamic s (m1, m2, set, m3) = (m1, m2, DS.setVar s True set, m3)
+olsSetAsStatic :: String -> OptimizeLoopSt -> OptimizeLoopSt
+olsSetAsStatic s (m1, m2, set, m3) = (m1, m2, DS.setVar s False set, m3)
+
+
 olsAddIe :: IExpr -> OptimizeLoopSt -> (String, OptimizeLoopSt)
 olsAddIe ie (x, v, d, da) = let
   dummyvar = "_y" ++ show x
@@ -773,14 +784,13 @@ olsAddIe ie (x, v, d, da) = let
   (dummyvar, (x + 1, v, d, (dummyvar, ie):da))
 
 olsOpenBlock :: OptimizeLoopSt -> OptimizeLoopSt
-olsOpenBlock (m1, m2, m3, m4) = (m1, VE.openClosure m2, m3, m4)
+olsOpenBlock (m1, m2, m3, m4) = (m1, VE.openClosure m2, VE.openClosure m3, m4)
 olsCloseBlock :: OptimizeLoopSt -> OptimizeLoopSt
-olsCloseBlock (m1, m2, m3, m4) = (m1, VE.closeClosure m2, m3, m4)
+olsCloseBlock (m1, m2, m3, m4) = (m1, VE.closeClosure m2, VE.closeClosure m3, m4)
 olsProtectVars :: [String] -> OptimizeLoopSt -> OptimizeLoopSt
-olsProtectVars vars (m1, m2, m3, m4) = (m1, VE.protectVars_ vars m2, m3, m4)
-olsEndProtection (m1, m2, m3, m4) = (m1, VE.endProtection m2, m3, m4)
-olsUndeclareVars :: [String] -> OptimizeLoopSt -> OptimizeLoopSt
-olsUndeclareVars vars (m1, m2, m3, m4) = (m1, (foldr VE.undeclareVar m2 vars), m3, m4)
+olsProtectVars vars (m1, m2, m3, m4) = (m1, VE.protectVars_ vars m2, VE.protectVars_ vars m3, m4)
+olsEndProtection :: OptimizeLoopSt -> OptimizeLoopSt
+olsEndProtection (m1, m2, m3, m4) = (m1, VE.endProtection m2, VE.endProtection m3, m4)
 loWithOpenBlock :: LoopOptimizer a -> LoopOptimizer a
 loWithOpenBlock f = do
   modify olsOpenBlock
@@ -794,7 +804,7 @@ loWithProtectedVars vars f = do
   res <- f
   modify olsEndProtection
   return res
-  
+
 trOptimizeIE :: (IExpr, Bool)  -> LoopOptimizer (IExpr)
 trOptimizeIE (ie, x) =
   if x then
@@ -806,6 +816,10 @@ trOptimizeIE (ie, x) =
   else
     return ie
 
+trOptimizeBlockIL :: IBlock -> LoopOptimizer IBlock
+trOptimizeBlockIL (IBlock instr) = do
+  loWithOpenBlock $ IBlock <$> mapM trOptimizeLoopIstmIL instr
+    
 trOptimizeLoopIstmIL :: IStmt -> LoopOptimizer IStmt
 trOptimizeLoopIstmIL istmt =
   case istmt of
@@ -814,24 +828,30 @@ trOptimizeLoopIstmIL istmt =
         ib <- IBlock <$> mapM trOptimizeLoopIstmIL instr
         return (IBStmt ib)
     -- IDecl iis -> _
-    IAss s ie -> undefined
+    IAss s ie -> do
+      (ie', x) <- trOptimizeLoopIExprIl ie
+      if x then do
+        modify $ olsSetAsStatic s
+        undefined
+        else
+        undefined
     IIncr s -> do
-      modify $ olsMarkAsDynamic s
+      modify $ olsDeclareAsDynamic s
       return istmt
     IDecr s -> do
-      modify $ olsMarkAsDynamic s
+      modify $ olsDeclareAsDynamic s
       return istmt
     IRet ie -> IRet <$> (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
     IVRet -> return istmt
-    ICond ie ib md -> do
-      ie' <- (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
-      (IBStmt ib') <- trOptimizeLoopIstmIL (IBStmt ib)
-      return $ ICond ie' ib' md
-    ICondElse ie ib1 ib2 md -> do
-      ie' <- (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
-      (IBStmt ib1') <- trOptimizeLoopIstmIL (IBStmt ib1)
-      (IBStmt ib2') <- trOptimizeLoopIstmIL (IBStmt ib2)
-      return $ ICondElse ie' ib1' ib2' md
+    -- ICond ie ib md -> do
+    --   ie' <- (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
+    --   (IBStmt ib') <- trOptimizeLoopIstmIL (IBStmt ib)
+    --   return $ ICond ie' ib' md
+    -- ICondElse ie ib1 ib2 md -> do
+    --   ie' <- (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
+    --   (IBStmt ib1') <- trOptimizeLoopIstmIL (IBStmt ib1)
+    --   (IBStmt ib2') <- trOptimizeLoopIstmIL (IBStmt ib2)
+    --   return $ ICondElse ie' ib1' ib2' md
     IWhile ie ib md -> return istmt
     ISExp ie -> ISExp <$> (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
     IStmtEmpty -> undefined
@@ -839,13 +859,14 @@ trOptimizeLoopIstmIL istmt =
 olsIsStatic :: String -> OptimizeLoopSt -> Bool
 olsIsStatic x y = not (olsIsDynamic x y)
 
-trOptimizeLoopIExprIl :: (IExpr) -> LoopOptimizer (IExpr, Bool)
+trOptimizeLoopIExprIl :: IExpr -> LoopOptimizer (IExpr, Bool)
 trOptimizeLoopIExprIl  iexp = do
   env   <- ask
   state <- get
 
   case iexp of
-      IVar s -> return (IVar (s `fromMaybe` olsLookup s state), olsIsStatic s state)
+      IVar s -> if olsIsDynamic s state then return (iexp, False)
+        else return (IVar (s`fromMaybe` olsLookup s state), True)
       ILitInt n -> return (iexp, True)
       ILitBool b -> return (iexp, True)
       IApp s ies -> do
@@ -905,4 +926,3 @@ trOptimizeLoopIExprIl  iexp = do
           ie1' <- trOptimizeIE x1
           ie2' <- trOptimizeIE x2
           return (IRel iro ie1' ie2', False)
-

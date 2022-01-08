@@ -256,8 +256,8 @@ getDynamicRegisters _ _ _ = DS.empty
 --   where
 --     getDynamicRegisters' = getDynamicRegisters dfuns
 
-gcseOptimize :: DS.Set String-> FCBlock -> FCBlock
-gcseOptimize dynFun block =
+gcseOptimizeProd :: DS.Set String-> FCBlock -> FCBlock
+gcseOptimizeProd dynFun block =
   snd (gcse' (argInit,block))
   where
     env = (dynFun, getDynamicRegisters dynFun DS.empty block)
@@ -275,3 +275,8 @@ gcseOptimize dynFun block =
             (_, block) = lcseBlock env block' lcseArgs
             in
             gcse' (argInit, block)
+
+gcseOptimizeTest :: DS.Set String-> FCBlock -> FCBlock
+gcseOptimizeTest x = id
+
+gcseOptimize = gcseOptimizeTest

@@ -169,7 +169,7 @@ outputFun name rt args = output rt ++ " @" ++ name ++ "(" ++ outputArgs args ++ 
 instance Outputable LLVMFunDecl where
   output (LLVMFunDecl name rt args body) =
     "define " ++ output rt ++ " @" ++ name ++ "(" ++ outputArgs args ++ ") {\n" ++
-    concatMap (\x -> output x ++ "\n") body
+    concatMap (\x -> "  " ++ output x ++ "\n") body
     ++ "}"
     where
       outputArgs :: [(FCType, FCRegister)] -> String
@@ -179,10 +179,10 @@ instance Outputable LLVMFunDecl where
 instance Outputable LLVMModule where
   output (LLVMModule exts consts list) =
     concatMap (\(reg,str)-> outputConstant reg str ++ "\n") consts
-    ++ (if null consts then "\n" else "") ++
+    ++ (if null consts then "" else "\n") ++
     concatMap (\(name, (rtype, args))-> outputExternalFunction name rtype args) exts
-    ++ (if null consts then "\n" else "") ++
-    concatMap (\x -> output x ++"\n") list
+    ++ (if null consts then "" else "\n") ++
+    concatMap (\x -> output x ++ "\n\n") list
     where
     outputExternalFunction :: String -> FCType -> [FCType] -> String
     outputExternalFunction name rtype list =

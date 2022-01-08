@@ -1,7 +1,5 @@
 #!/bin/bash
 
-#!/bin/bash
-
 function error(){
 	echo "$1"
 	exit 1
@@ -13,17 +11,28 @@ fi
 
 DIR=$(dirname "$0")
 EXE="$DIR""/build/Main"
+RUNTIME="${DIR}/lib/runtime.bc"
 PROG="$1"
 
 function compile() {
     path="$1"
     file="$(basename $path)"
     path_without_ext="${path%.lat}"
-    file_latte="${path_without_ext}.ll"
-    "$EXE" "$1" 1>> "$file_latte"
+    file_llvm="${path_without_ext}.ll"
+    tmp_file="${path_without_ext}_.bc"
+    file_bc="${path_without_ext}.bc"
+    "$EXE" "$1" 1> "$file_llvm"
     ret=$?
-    rm "$file_latte" 		# Usunąć, gdy już zajmiemy się generacją kodu.
     if (( ret == 0 )) ; then
+	llvm-as -o "${tmp_file}" "$file_llvm"
+	if (( $? )) ; then
+	    exit 1
+	fi
+	# echo "$file_bc"
+	# echo "$tmp_file"
+	# echo "$RUNTIME"
+	llvm-link -o "$file_bc" "$tmp_file" "$RUNTIME"
+	rm "$tmp_file"
 	exit 0 
     else
 	exit 1

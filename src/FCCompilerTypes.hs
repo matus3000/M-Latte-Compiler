@@ -72,7 +72,8 @@ binOpType x = case x of
   Gth -> FBoolean
   Ge -> FBoolean
 
-data FCRegister = VoidReg | Reg String | ConstString Int | LitInt Int | LitBool Bool | Et String
+data FCRegister = VoidReg | Reg String | ConstString Int | LitInt Int
+                | LitBool Bool | Et String | FCNull FCType
   deriving (Eq, Ord)
 
 type PhiFrom = FCRegister
@@ -88,7 +89,7 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCEmptyExpr |
                 FCFunArg FCType String Int |
                 FCJump FCRegister |
-                FCCondJump FCRegister FCRegister FCRegister
+                FCCondJump FCRegister FCRegister FCRegister 
   deriving (Eq, Ord)
 
 type FCInstr = (FCRegister, FCRValue)

@@ -750,22 +750,33 @@ functionMetaDataNew ifuns =
 data FunctionMetadata = FM {usedExternal :: DS.Set String,
                             dynamicFunctions :: DS.Set String}
 
+--------------------------------------------------------------------------------------------------
+
+trOptimizeLoop :: DynamicFunction -> IBlock -> IBlock
 
 type DynamicFunction = DS.Set String
 type DynamicVariables = VE.VarEnv String Bool
 type OptimizeLoopEnv = DynamicFunction
-type OptimizeLoopSt = (Int, VarEnv String String, DynamicVariables, DummyAssignments)
+type OptimizeLoopSt = (Int, DM.Map String String, DynamicVariables, DummyAssignments)
 type DummyAssignments = [(String, IExpr)]
 type LoopOptimizer = ReaderT OptimizeLoopEnv (State OptimizeLoopSt)
 
 
+
 oleIsFunStatic:: String -> OptimizeLoopEnv -> Bool
 oleIsFunStatic s env = not $ DS.member s env
-olsLookup :: String -> OptimizeLoopSt -> Maybe String
-olsLookup s (_, venv, _, _) = VE.lookupVar s venv
-olsIsDynamic :: String -> OptimizeLoopSt -> Bool
-olsIsDynamic s (_, _, set, _) =  VE.containsVar s set
 
+olsInit :: [String] -> OptimizeLoopSt
+olsInit vars = (0, DM.empty,
+                foldr (\x -> VE.declareVar x True) (VE.openClosure newVarEnv) vars,
+                [])
+olsLookup :: String -> OptimizeLoopSt -> Maybe String
+olsLookup s (_, venv, _, _) = DM.lookup s venv
+olsIsDynamic :: String -> OptimizeLoopSt -> Bool
+olsIsDynamic s (_, _, set, _) = False `fromMaybe` VE.lookupVar s set
+
+olsAddMap :: String -> String -> OptimizeLoopSt -> OptimizeLoopSt
+olsAddMap x y (m1, venv, m2, m3) = (m1, DM.insert x y venv, m2, m3)
 olsDeclareAsDynamic :: String -> OptimizeLoopSt -> OptimizeLoopSt
 olsDeclareAsDynamic s (m1, m2, set, m3) = (m1, m2, DS.declareVar s True set, m3)
 olsDeclareAsStatic :: String -> OptimizeLoopSt -> OptimizeLoopSt
@@ -784,13 +795,13 @@ olsAddIe ie (x, v, d, da) = let
   (dummyvar, (x + 1, v, d, (dummyvar, ie):da))
 
 olsOpenBlock :: OptimizeLoopSt -> OptimizeLoopSt
-olsOpenBlock (m1, m2, m3, m4) = (m1, VE.openClosure m2, VE.openClosure m3, m4)
+olsOpenBlock (m1, m2, m3, m4) = (m1, m2, VE.openClosure m3, m4)
 olsCloseBlock :: OptimizeLoopSt -> OptimizeLoopSt
-olsCloseBlock (m1, m2, m3, m4) = (m1, VE.closeClosure m2, VE.closeClosure m3, m4)
-olsProtectVars :: [String] -> OptimizeLoopSt -> OptimizeLoopSt
-olsProtectVars vars (m1, m2, m3, m4) = (m1, VE.protectVars_ vars m2, VE.protectVars_ vars m3, m4)
-olsEndProtection :: OptimizeLoopSt -> OptimizeLoopSt
-olsEndProtection (m1, m2, m3, m4) = (m1, VE.endProtection m2, VE.endProtection m3, m4)
+olsCloseBlock (m1, m2, m3, m4) = (m1, m2, VE.closeClosure m3, m4)
+-- olsProtectVars :: [String] -> OptimizeLoopSt -> OptimizeLoopSt
+-- olsProtectVars vars (m1, m2, m3, m4) = (m1, m2, VE.protectVars_ vars m3, m4)
+-- olsEndProtection :: OptimizeLoopSt -> OptimizeLoopSt
+-- olsEndProtection (m1, m2, m3, m4) = (m1,  m2, VE.endProtection m3, m4)
 loWithOpenBlock :: LoopOptimizer a -> LoopOptimizer a
 loWithOpenBlock f = do
   modify olsOpenBlock
@@ -798,11 +809,12 @@ loWithOpenBlock f = do
   modify olsCloseBlock
   return res
 
-loWithProtectedVars :: [String] -> LoopOptimizer a -> LoopOptimizer a
-loWithProtectedVars vars f = do
-  modify $ olsProtectVars vars
+loWithProtectedVars :: LoopOptimizer a -> LoopOptimizer a
+loWithProtectedVars f = do
+  (_, m2, m3, _)<- get
   res <- f
-  modify olsEndProtection
+  (m1, _, _, m4) <- get
+  put (m1, m2, m3,m4)
   return res
 
 trOptimizeIE :: (IExpr, Bool)  -> LoopOptimizer (IExpr)
@@ -816,25 +828,37 @@ trOptimizeIE (ie, x) =
   else
     return ie
 
-trOptimizeBlockIL :: IBlock -> LoopOptimizer IBlock
-trOptimizeBlockIL (IBlock instr) = do
+trOptimizeLoopBlockIL :: IBlock -> LoopOptimizer IBlock
+trOptimizeLoopBlockIL (IBlock instr) = do
   loWithOpenBlock $ IBlock <$> mapM trOptimizeLoopIstmIL instr
-    
+
+trOptimizeLoopIItem :: IItem -> LoopOptimizer IItem
+trOptimizeLoopIItem (IItem s ie) = do
+  (ie', x) <- trOptimizeLoopIExprIl ie
+  if x then do
+      ols <- get
+      let (s', ols') = olsAddIe ie ols
+      put (olsAddMap s s'$ olsDeclareAsStatic s ols')
+      return (IItem s (IVar s'))
+    else do
+    modify $ olsDeclareAsDynamic s
+    return (IItem s ie')
+
 trOptimizeLoopIstmIL :: IStmt -> LoopOptimizer IStmt
 trOptimizeLoopIstmIL istmt =
   case istmt of
-    IBStmt (IBlock instr) ->
-      do
-        ib <- IBlock <$> mapM trOptimizeLoopIstmIL instr
-        return (IBStmt ib)
-    -- IDecl iis -> _
+    IBStmt iblock -> IBStmt <$> trOptimizeLoopBlockIL iblock
+    IDecl iis -> IDecl <$> mapM trOptimizeLoopIItem iis
     IAss s ie -> do
       (ie', x) <- trOptimizeLoopIExprIl ie
       if x then do
-        modify $ olsSetAsStatic s
-        undefined
-        else
-        undefined
+        ols <- get
+        let (s', ols') = olsAddIe ie ols
+        put (olsAddMap s s' $ olsSetAsStatic s ols')
+        return $ IAss s (IVar s')
+        else do
+        modify $ olsSetAsDynamic s
+        return $ IAss s ie'
     IIncr s -> do
       modify $ olsDeclareAsDynamic s
       return istmt
@@ -843,15 +867,17 @@ trOptimizeLoopIstmIL istmt =
       return istmt
     IRet ie -> IRet <$> (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
     IVRet -> return istmt
-    -- ICond ie ib md -> do
+    ICond ie ib md -> undefined
     --   ie' <- (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
     --   (IBStmt ib') <- trOptimizeLoopIstmIL (IBStmt ib)
     --   return $ ICond ie' ib' md
-    -- ICondElse ie ib1 ib2 md -> do
-    --   ie' <- (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
-    --   (IBStmt ib1') <- trOptimizeLoopIstmIL (IBStmt ib1)
-    --   (IBStmt ib2') <- trOptimizeLoopIstmIL (IBStmt ib2)
-    --   return $ ICondElse ie' ib1' ib2' md
+    ICondElse ie ib1 ib2 (MD md) -> do
+      ie' <- trOptimizeLoopIExprIl ie >>= trOptimizeIE
+      ib1' <- loWithProtectedVars $ trOptimizeLoopBlockIL ib1
+      ib2' <- loWithProtectedVars $ trOptimizeLoopBlockIL ib2
+      ols <- get
+      put $ DS.foldr olsSetAsDynamic ols md
+      return $ ICondElse ie' ib1' ib2' (MD md)
     IWhile ie ib md -> return istmt
     ISExp ie -> ISExp <$> (trOptimizeLoopIExprIl ie >>= trOptimizeIE)
     IStmtEmpty -> undefined
@@ -926,3 +952,37 @@ trOptimizeLoopIExprIl  iexp = do
           ie1' <- trOptimizeIE x1
           ie2' <- trOptimizeIE x2
           return (IRel iro ie1' ie2', False)
+
+
+trOptimizeLoop dfuns (IBlock stmts) =
+  IBlock $ map f stmts
+  where
+    f :: IStmt-> IStmt
+    f stmt = case stmt of
+      IBStmt ib -> IBStmt $ trOptimizeLoop dfuns ib
+      ICond ie ib md -> let
+        ib' = trOptimizeLoop dfuns ib
+        in
+        ICond ie ib md
+      ICondElse ie ibs ibf md -> let
+        ibs' = trOptimizeLoop dfuns ibs
+        ibf' = trOptimizeLoop dfuns ibf
+        in
+        ICondElse ie ibs' ibf' md
+      IWhile ie ib (MD md) ->
+        let
+          monad = do
+            ie' <- trOptimizeLoopIExprIl ie >>= trOptimizeIE
+            ib' <- trOptimizeLoopBlockIL (trOptimizeLoop dfuns ib)
+            return (ie', ib')
+          ((ie', ib'), (_,_,_, da)) = flip runState (olsInit (DS.toList md)) $ runReaderT monad dfuns
+          newWhile = IWhile ie' ib' (MD md)
+          
+          -- z = IBStmt $ IBlock $ map (\(s, iexp) ->IDecl [IItem s iexp] ) (reverse da)
+          z = undefined  -- To powinno być if else
+          newStmt = if null da
+            then newWhile
+            else IBStmt $ IBlock [z, newWhile]
+        in
+          newStmt
+      _ -> stmt

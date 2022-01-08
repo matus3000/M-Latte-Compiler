@@ -19,7 +19,6 @@ import qualified Data.List as DL
 import Control.Monad.State.Strict
 import Control.Monad.Except (Except, MonadError)
 
-import CompilationError(SemanticError, SemanticError(CompilationError), SemanticErrorType (oldDefinition))
 import Translator(CompilerExcept, Convertable(..))
 import FCCompilerTypes as FCT
 import qualified Translator as Tr
@@ -211,7 +210,7 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
           \bname -> f bname bbNew ies (successEt, postEt)
 
         (pb, res) <- withPrenamedOpenBlock postEt Post $ \bname -> do
-          let phi = FCPhi Bool [(sreg, Et sbn), (LitBool True, Et successEt)]
+          let phi = FCPhi Bool [(LitBool True, Et successEt), (sreg, Et sbn)]
           (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 

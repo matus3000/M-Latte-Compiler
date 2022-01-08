@@ -19,7 +19,7 @@ import System.Exit
 
 import qualified IDefinition as IDef
 import FCCompiler(compileProg)
-import FCCompilerTypes(showFCProg, buildIndentMonad)
+import qualified LLVMCompiler as LLVM (compile)
 
 import qualified Latte.Abs as Lt
     (
@@ -44,8 +44,7 @@ compile :: Lt.Program -> CompilerExcept String
 compile program =
   do
     iprogram <- (programToInternal . IDef.preprocessProgram) program
-    return $ buildIndentMonad " " 4 0 (showFCProg (compileProg iprogram))
-    
+    return $ LLVM.compile (compileProg  iprogram)
 
 argumentError = 1
 grammarError = 2

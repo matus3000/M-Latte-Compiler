@@ -156,7 +156,7 @@ instance Outputable LLVMInstr where
     where
       left = case reg of
         VoidReg -> ""
-        reg -> show reg ++ " = "
+        reg -> output reg ++ " = "
 
 
 outputFun :: String -> FCType -> [(FCType, FCRegister)] -> String

@@ -19,10 +19,7 @@ module FCCompilerTypes (
   FCProg(..),
   fCRValueType,
   jump,
-  conditionalJump,
-  showFCProg,
-  buildIndentMonad,
-  printIndentMonad)
+  conditionalJump)
 where
 
 import Control.Monad.Except (Except, MonadError)
@@ -143,14 +140,6 @@ data RegType = RNormal | RDynamic | RPhi | RVoid
 
 data BlockType = FunBody | Normal | BoolExp | Cond | While | Check | Success | Failure | Post | BTPlacceHolder
 
-instance Show FCRegister where
-  showsPrec _ VoidReg = showString ""
-  showsPrec _ (Reg str) = showString "%R" . showString str
-  showsPrec y (LitBool x) = showsPrec y (if x then 1 else 0)
-  showsPrec y (LitInt x) = showsPrec y x
-  showsPrec y (ConstString x) = showString "@S" . showsPrec y x
-  showsPrec _ (Et et) = showString "%" . showString et
-
 instance Convertable IDef.LType FCType where
   convert x = case x of
     IDef.LBool  -> Bool
@@ -200,195 +189,205 @@ fCRValueType x = case x of
   FCPhi ft _ -> ft
   FCJump _ -> Void
   FCCondJump{} -> Void
---INDENTATION MONAD --
 
-instance Show FCType where
-  show Int = "i32"
-  show Bool = "i1"
-  show DynamicStringPtr = "i8*"
-  show (ConstStringPtr x) = "[" ++ show x ++ " x i8 ]*"
-  show Void = "void"
+-- --INDENTATION MONAD --
 
-instance Show FCBinaryOperator where
-  show x =
-    case x of
-      Add -> "add"
-      Sub -> "sub"
-      Mul -> "mul"
-      Div -> "sdiv"
-      Mod -> "srem"
-      Lth -> "icmp slt"
-      Le  -> "icmp sle"
-      Equ -> "icmp eq"
-      Neq -> "icmp ne"
-      Gth -> "icmp sgt"
-      Ge  -> "icmp sge"
-      _ -> error "show FCBinOP undefined"
+-- instance Show FCRegister where
+--   showsPrec _ VoidReg = showString ""
+--   showsPrec _ (Reg str) = showString "%R" . showString str
+--   showsPrec y (LitBool x) = showsPrec y (if x then 1 else 0)
+--   showsPrec y (LitInt x) = showsPrec y x
+--   showsPrec y (ConstString x) = showString "@S" . showsPrec y x
+--   showsPrec _ (Et et) = showString "%" . showString et
 
 
-showFun :: String -> FCType -> [(FCType, FCRegister)] -> String
-showFun name rt args = show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ")"
-  where
-    showArgs :: [(FCType, FCRegister)] -> String
-    showArgs = foldr (\(ftype, freg) s ->
-                        show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
+-- instance Show FCType where
+--   show Int = "i32"
+--   show Bool = "i1"
+--   show DynamicStringPtr = "i8*"
+--   show (ConstStringPtr x) = "[" ++ show x ++ " x i8 ]*"
+--   show Void = "void"
+
+-- instance Show FCBinaryOperator where
+--   show x =
+--     case x of
+--       Add -> "add"
+--       Sub -> "sub"
+--       Mul -> "mul"
+--       Div -> "sdiv"
+--       Mod -> "srem"
+--       Lth -> "icmp slt"
+--       Le  -> "icmp sle"
+--       Equ -> "icmp eq"
+--       Neq -> "icmp ne"
+--       Gth -> "icmp sgt"
+--       Ge  -> "icmp sge"
+--       _ -> error "show FCBinOP undefined"
+
+
+-- showFun :: String -> FCType -> [(FCType, FCRegister)] -> String
+-- showFun name rt args = show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ")"
+--   where
+--     showArgs :: [(FCType, FCRegister)] -> String
+--     showArgs = foldr (\(ftype, freg) s ->
+--                         show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
             
-instance Show FCRValue where
-  showsPrec _ (FCBinOp ftype fbop r1 r2) s =
-    show fbop ++ " " ++ show ftype ++ " " ++ show r1 ++ ", "
-    ++ show r2 ++ s
-  showsPrec _ (Return ftype m_fcr) s = "ret " ++ show ftype ++
-    (case m_fcr of
-      Just val -> " " ++ show val
-      Nothing -> "") ++ s
-  showsPrec _ (FCUnOp ftype fuop r1) s = case fuop of
-    Neg -> "sub " ++ show ftype ++ " 0, " ++ show r1 ++ s
-    BoolNeg -> error "Instancja Show dla FCRValue(BoolNeg) niezdefiniowana"
-  showsPrec _ (BitCast ftf r ftt) s = "bitcast " ++ show ftf ++ " " ++ show r ++ " to " ++ show ftt ++ s
-  showsPrec _ (FCPhi _ []) s = error "Malformed (empty) PHI"
-  showsPrec _ (FCPhi x list) s = "phi " ++ show x ++ " " ++
-    foldr (\(rvalue, rfrom) rest ->
-             showPhiArg rvalue rfrom ++ (if null rest then "" else ", ")
-             ++ rest)
-    ""
-    list
-    ++ s
-    where
-      showPhiArg :: FCRegister -> FCRegister -> String
-      showPhiArg rval rfrom = "[" ++ show rval ++", " ++ show rfrom ++ "]"
-  showsPrec _ (FCJump register) s = "br label " ++ show register ++ s
-  showsPrec _ (FCCondJump c1 s f) str = "br i8 " ++ show c1 ++ ", label "
-    ++ show s ++ ", label " ++ show f ++ str
-  showsPrec _ (FunCall rtype fname args) str = "call " ++ showFun fname rtype args ++ str
-  showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
+-- instance Show FCRValue where
+--   showsPrec _ (FCBinOp ftype fbop r1 r2) s =
+--     show fbop ++ " " ++ show ftype ++ " " ++ show r1 ++ ", "
+--     ++ show r2 ++ s
+--   showsPrec _ (Return ftype m_fcr) s = "ret " ++ show ftype ++
+--     (case m_fcr of
+--       Just val -> " " ++ show val
+--       Nothing -> "") ++ s
+--   showsPrec _ (FCUnOp ftype fuop r1) s = case fuop of
+--     Neg -> "sub " ++ show ftype ++ " 0, " ++ show r1 ++ s
+--     BoolNeg -> error "Instancja Show dla FCRValue(BoolNeg) niezdefiniowana"
+--   showsPrec _ (BitCast ftf r ftt) s = "bitcast " ++ show ftf ++ " " ++ show r ++ " to " ++ show ftt ++ s
+--   showsPrec _ (FCPhi _ []) s = error "Malformed (empty) PHI"
+--   showsPrec _ (FCPhi x list) s = "phi " ++ show x ++ " " ++
+--     foldr (\(rvalue, rfrom) rest ->
+--              showPhiArg rvalue rfrom ++ (if null rest then "" else ", ")
+--              ++ rest)
+--     ""
+--     list
+--     ++ s
+--     where
+--       showPhiArg :: FCRegister -> FCRegister -> String
+--       showPhiArg rval rfrom = "[" ++ show rval ++", " ++ show rfrom ++ "]"
+--   showsPrec _ (FCJump register) s = "br label " ++ show register ++ s
+--   showsPrec _ (FCCondJump c1 s f) str = "br i8 " ++ show c1 ++ ", label "
+--     ++ show s ++ ", label " ++ show f ++ str
+--   showsPrec _ (FunCall rtype fname args) str = "call " ++ showFun fname rtype args ++ str
+--   showsPrec _ _ s = error "Instancja Show dla FCRValue niezdefiniowana"
 
-    -- PRINT MONAD
+--     -- PRINT MONAD
 
-type StringBuilder = State [String]
-type IndentMonad = ReaderT AltIndentation StringBuilder ()
-type AltIndentation = (String, String)
+-- type StringBuilder = State [String]
+-- type IndentMonad = ReaderT AltIndentation StringBuilder ()
+-- type AltIndentation = (String, String)
 
-pmPutLine :: String -> IndentMonad
-pmPutLine s = do
-  (_, cind) <- ask
-  hist <- get
-  put $ "\n":s:cind:hist
-pmPutString :: String -> IndentMonad
-pmPutString s = do
-  (_, cind) <- ask
-  hist <- get
-  put $ s:cind:hist
-pmNewLine :: IndentMonad
-pmNewLine = modify ("\n":)
-withIndent :: IndentMonad -> IndentMonad
-withIndent f = (\(indent, oldIndent) -> (indent, indent ++ oldIndent)) `local` f
+-- pmPutLine :: String -> IndentMonad
+-- pmPutLine s = do
+--   (_, cind) <- ask
+--   hist <- get
+--   put $ "\n":s:cind:hist
+-- pmPutString :: String -> IndentMonad
+-- pmPutString s = do
+--   (_, cind) <- ask
+--   hist <- get
+--   put $ s:cind:hist
+-- pmNewLine :: IndentMonad
+-- pmNewLine = modify ("\n":)
+-- withIndent :: IndentMonad -> IndentMonad
+-- withIndent f = (\(indent, oldIndent) -> (indent, indent ++ oldIndent)) `local` f
 
-buildIndentMonad :: String -> Int -> Int -> IndentMonad -> String
-buildIndentMonad indentType len init monad =
-  let
-    indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
-    indent = indentFun len indentType
-    initIndent = indentFun init indent
-    list = execState (runReaderT monad (indent, initIndent)) []
-  in
-    concat (reverse list)
+-- buildIndentMonad :: String -> Int -> Int -> IndentMonad -> String
+-- buildIndentMonad indentType len init monad =
+--   let
+--     indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
+--     indent = indentFun len indentType
+--     initIndent = indentFun init indent
+--     list = execState (runReaderT monad (indent, initIndent)) []
+--   in
+--     concat (reverse list)
 
-printIndentMonad :: String -> Int -> Int -> IndentMonad -> IO ()
-printIndentMonad indentType len init monad =
-  let
-    indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
-    indent = indentFun len indentType
-    initIndent = indentFun init indent
-    list = execState (runReaderT monad (indent, initIndent)) []
-  in
-    mapM_ putStr (reverse list)
-
-
-printFCInstr :: FCInstr -> IndentMonad
-printFCInstr (reg, instr) = do
-  pmPutLine $ showedReg ++ show instr
-  where
-    showedReg = case reg of
-      VoidReg -> ""
-      reg -> show reg ++ " = "
-
-showFCLabel :: String -> String
-showFCLabel x = "label %" ++ x
-
-printFCBlockName :: FCBlock -> IndentMonad
-printFCBlockName fcblock = do
-  unless (null (bname fcblock)) (pmPutLine $ bname fcblock ++ ":")
-printFCBlock :: FCBlock -> IndentMonad
-printFCBlock fcblock@(FCNamedSBlock name instr _) = do
-  printFCBlockName fcblock
-  mapM_ printFCInstr instr
-printFCBlock fcblock@(FCComplexBlock name blocks _) = do
-  printFCBlockName fcblock
-  mapM_ printFCBlock blocks
-printFCBlock fcblock@FCCondBlock {} = do
-  printFCBlockName fcblock
-  printFCBlock (condEval fcblock)
-  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
-    ++ showBlockLabel failureBlock
-  printFCBlock successBlock
-  printFCBlock failureBlock
-  printFCBlock (post fcblock)
-  where
-    successBlock = success fcblock
-    failureBlock = failure fcblock
-    showBlockLabel = showFCLabel . bname
-printFCBlock fcblock@FCPartialCond{} = do
-  printFCBlockName fcblock
-  printFCBlock (condEval fcblock)
-  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
-    ++ showBlockLabel failureBlock
-  printFCBlock successBlock
-  printFCBlock failureBlock
-    where
-    successBlock = success fcblock
-    failureBlock = failure fcblock
-    showBlockLabel = showFCLabel . bname
-printFCBlock fcblock@FCWhileBlock{} = do
-  printFCBlockName fcblock
-  printFCInstr (VoidReg, jump (bname $ post fcblock))
-  printFCBlock successBlock
-  printFCBlock (post fcblock)
-  printFCBlock (condEval fcblock)
-  pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++ showBlockLabel successBlock ++ ", " ++ "%" ++(epilogueLabel fcblock)
-  where
-    successBlock = success fcblock
-    showBlockLabel = showFCLabel . bname
+-- printIndentMonad :: String -> Int -> Int -> IndentMonad -> IO ()
+-- printIndentMonad indentType len init monad =
+--   let
+--     indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
+--     indent = indentFun len indentType
+--     initIndent = indentFun init indent
+--     list = execState (runReaderT monad (indent, initIndent)) []
+--   in
+--     mapM_ putStr (reverse list)
 
 
-printFCFun :: FCFun -> IndentMonad
-printFCFun (FCFun' name rt args body) = do
-  pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"
-  withIndent $ printFCBlock body
-  pmPutLine "}"
-  where
-    showArgs :: [(FCType, FCRegister)] -> String
-    showArgs = foldr (\(ftype, freg) s ->
-                        show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
+-- printFCInstr :: FCInstr -> IndentMonad
+-- printFCInstr (reg, instr) = do
+--   pmPutLine $ showedReg ++ show instr
+--   where
+--     showedReg = case reg of
+--       VoidReg -> ""
+--       reg -> show reg ++ " = "
 
-showFCProg :: FCProg -> IndentMonad
-showFCProg (FCProg exts consts list) = do
-  mapM_ (\(reg,str)-> pmPutLine $ showConstant reg str) consts
-  unless (null consts) pmNewLine
-  mapM_ (\(name, (rtype, args))-> printExternalFunction name rtype args) exts
-  unless (null list) pmNewLine
-  mapM_ (\fun -> printFCFun fun >> pmNewLine) list
-  pmNewLine
-  where
-    printExternalFunction :: String -> FCType -> [FCType] -> IndentMonad
-    printExternalFunction name rtype list = do
-      pmPutLine $ "declare " ++ show rtype ++ " @" ++ name ++ "(" ++ f list ++ ")"
-        where
-        f :: [FCType] -> String
-        f = foldr (\ftype s ->
-                        show ftype ++ (if null s then "" else ", ") ++ s) ""
-    showConstant :: FCRegister -> String -> String 
-    showConstant freg@(ConstString x) str = show freg ++ " = internal constant "
-      ++ "[" ++ show (1 + length str) ++ "x i8" ++ "] c" ++ "\"" ++ str' ++ "\""
-      where
-        str' = str ++ "\\00"
-    showConstant _ _ = undefined
+-- showFCLabel :: String -> String
+-- showFCLabel x = "label %" ++ x
+
+-- printFCBlockName :: FCBlock -> IndentMonad
+-- printFCBlockName fcblock = do
+--   unless (null (bname fcblock)) (pmPutLine $ bname fcblock ++ ":")
+-- printFCBlock :: FCBlock -> IndentMonad
+-- printFCBlock fcblock@(FCNamedSBlock name instr _) = do
+--   printFCBlockName fcblock
+--   mapM_ printFCInstr instr
+-- printFCBlock fcblock@(FCComplexBlock name blocks _) = do
+--   printFCBlockName fcblock
+--   mapM_ printFCBlock blocks
+-- printFCBlock fcblock@FCCondBlock {} = do
+--   printFCBlockName fcblock
+--   printFCBlock (condEval fcblock)
+--   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
+--     ++ showBlockLabel failureBlock
+--   printFCBlock successBlock
+--   printFCBlock failureBlock
+--   printFCBlock (post fcblock)
+--   where
+--     successBlock = success fcblock
+--     failureBlock = failure fcblock
+--     showBlockLabel = showFCLabel . bname
+-- printFCBlock fcblock@FCPartialCond{} = do
+--   printFCBlockName fcblock
+--   printFCBlock (condEval fcblock)
+--   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++  showBlockLabel successBlock ++ ", "
+--     ++ showBlockLabel failureBlock
+--   printFCBlock successBlock
+--   printFCBlock failureBlock
+--     where
+--     successBlock = success fcblock
+--     failureBlock = failure fcblock
+--     showBlockLabel = showFCLabel . bname
+-- printFCBlock fcblock@FCWhileBlock{} = do
+--   printFCBlockName fcblock
+--   printFCInstr (VoidReg, jump (bname $ post fcblock))
+--   printFCBlock successBlock
+--   printFCBlock (post fcblock)
+--   printFCBlock (condEval fcblock)
+--   pmPutLine $ "br i1 " ++ show (jmpReg fcblock) ++ ", " ++ showBlockLabel successBlock ++ ", " ++ "%" ++(epilogueLabel fcblock)
+--   where
+--     successBlock = success fcblock
+--     showBlockLabel = showFCLabel . bname
+
+
+-- printFCFun :: FCFun -> IndentMonad
+-- printFCFun (FCFun' name rt args body) = do
+--   pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"
+--   withIndent $ printFCBlock body
+--   pmPutLine "}"
+--   where
+--     showArgs :: [(FCType, FCRegister)] -> String
+--     showArgs = foldr (\(ftype, freg) s ->
+--                         show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
+
+-- showFCProg :: FCProg -> IndentMonad
+-- showFCProg (FCProg exts consts list) = do
+--   mapM_ (\(reg,str)-> pmPutLine $ showConstant reg str) consts
+--   unless (null consts) pmNewLine
+--   mapM_ (\(name, (rtype, args))-> printExternalFunction name rtype args) exts
+--   unless (null list) pmNewLine
+--   mapM_ (\fun -> printFCFun fun >> pmNewLine) list
+--   pmNewLine
+--   where
+--     printExternalFunction :: String -> FCType -> [FCType] -> IndentMonad
+--     printExternalFunction name rtype list = do
+--       pmPutLine $ "declare " ++ show rtype ++ " @" ++ name ++ "(" ++ f list ++ ")"
+--         where
+--         f :: [FCType] -> String
+--         f = foldr (\ftype s ->
+--                         show ftype ++ (if null s then "" else ", ") ++ s) ""
+--     showConstant :: FCRegister -> String -> String 
+--     showConstant freg@(ConstString x) str = show freg ++ " = internal constant "
+--       ++ "[" ++ show (1 + length str) ++ "x i8" ++ "] c" ++ "\"" ++ str' ++ "\""
+--       where
+--         str' = str ++ "\\00"
+--     showConstant _ _ = undefined

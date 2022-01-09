@@ -25,7 +25,7 @@ import qualified Translator as Tr
 import qualified Data.Functor
 import FCCompilerState (VariableEnvironment(..),
                         ConstantsEnvironment(..))
-import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi),
+import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi), FCRegister(..),
                         FCType(..),
                         FCBlock(..))
 import VariableEnvironment(VarEnv(..), newVarEnv)
@@ -39,14 +39,19 @@ import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 import Data.List (nub)
 import Gsce (gcseOptimize)
 
-
-
 externalFunctions :: [([Char], (FCType, [FCType]))]
 externalFunctions = [("printString", (Void, [DynamicStringPtr])),
                      ("printInt", (Void, [Int])),
                      ("error", (Void, [])),
                      ("readInt", (Int, [])),
-                     ("readString", (DynamicStringPtr, []))]
+                     ("readString", (DynamicStringPtr, [])),
+                     ("_strconcat", (DynamicStringPtr, [DynamicStringPtr, DynamicStringPtr])),
+                     ("_strle", (Bool, [DynamicStringPtr, DynamicStringPtr])),
+                     ("_strlt", (Bool, [DynamicStringPtr, DynamicStringPtr])),
+                      ("_strge", (Bool, [DynamicStringPtr, DynamicStringPtr])),
+                      ("_strgt", (Bool, [DynamicStringPtr, DynamicStringPtr])),
+                      ("_streq", (Bool, [DynamicStringPtr, DynamicStringPtr])),
+                      ("_strneq", (Bool, [DynamicStringPtr, DynamicStringPtr]))]
 
 type FCVarEnv = VarEnv String FCRegister
 
@@ -272,9 +277,21 @@ translateExpr bname bb ie save =
         (bb', (ftype, reg)) <- translateExpr' bb ie True
         (bb'', reg') <- emplaceFCRValue (FCUnOp ftype Neg reg) bb'
         return (bb'', (ftype, reg'))
-       -- Tr.INot ie -> do
-       --   reg <- translateExpr ie True
-       --   prependFCRValue RNormal $ FCUnOp BoolNeg reg
+      Tr.INot ie -> case ie of
+        Tr.INot ie' -> undefined -- translateExpr bname bb ie' save
+        _ -> do
+          labels <- generateLabels 3
+          ssa <- gets fccSSAAloc
+          let [post, success, failure] = labels
+              phirval=FCPhi Bool [((LitBool False), Et success), ((LitBool True), Et failure)]
+              (ssa', newReg) = _nextRegister ssa
+          modify $ fccPutSSAAloc ssa'
+          
+          (bb', (_, reg)) <- translateExpr bname bbNew ie True
+
+          let res = FCCondBlock "" (bbBuildAnonymous bb') reg (FCNamedSBlock success [(VoidReg, jump post)] ())
+                    (FCNamedSBlock failure [(VoidReg, jump post)] ()) (FCNamedSBlock post [(newReg, phirval)] ()) ()
+          return (bbaddBlock res bb, (Bool, newReg))
       Tr.IAnd _ -> do
         translateAndExpr bname bb ie True
       Tr.IOr _ -> do
@@ -320,42 +337,45 @@ translateInstr name bb stmt = case stmt of
     return $ bbaddInstr (VoidReg, Return ft (Just r)) bb'
   Tr.IVRet -> return $ bbaddInstr (VoidReg, Return Void Nothing) bb
   Tr.ICondElse ie ib ib' (Tr.MD md) ->
-    withOpenBlock Cond $ \name -> do
-    labels <- generateLabels 3
-    let ascmd = DS.toAscList md
-        [postLabel, successLabel, failureLabel] = labels
-        successEt = Et successLabel
-        failureEt = Et failureLabel
+    case ie of
+      Tr.INot ie' -> translateInstr name bb (Tr.ICondElse ie' ib' ib (Tr.MD md))
+      _ ->
+        withOpenBlock Cond $ \name -> do
+        labels <- generateLabels 3
+        let ascmd = DS.toAscList md
+            [postLabel, successLabel, failureLabel] = labels
+            successEt = Et successLabel
+            failureEt = Et failureLabel
 
 
-    (cb, jr) <- withOpenBlock  Check $ (\name -> (do
+        (cb, jr) <- withOpenBlock  Check $ (\name -> (do
                                                          (bb, (_, reg)) <- translateExpr name bbNew ie True
                                                          return (bbBuildAnonymous bb, reg)))
 
-    (sVals, sb) <- withPrenamedOpenBlock successLabel Success $ (\name ->
+        (sVals, sb) <- withPrenamedOpenBlock successLabel Success $ (\name ->
                                                      withProtectedVars ascmd $ do
                                                       sbb <- translateBlock name ib bbNew
                                                       sVal <- mapM getVar ascmd
                                                       let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
                                                       return (sVal, bbBuildNamed sbb' name))
 
-    (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure $ (\name ->
+        (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure $ (\name ->
                                            withProtectedVars ascmd $ do
                                            sbb <- translateBlock name ib' bbNew
                                            fVals <- mapM getVar ascmd
                                            let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
                                            return (fVals, bbBuildNamed sbb' name))
 
-    pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
+        pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
                                                  pbb <- phi (zip ascmd (zip sVals fVals)) successEt failureEt
                                                  return (bbBuildNamed pbb name))
-    return $ bbaddBlock (FCCondBlock name cb jr sb fb pb ()) bb
+        return $ bbaddBlock (FCCondBlock name cb jr sb fb pb ()) bb
   Tr.IWhile ie ib (Tr.MD md) -> withOpenBlock While $ \wname -> do
     labels <- generateLabels 4
     let [postEtStr, checkEtStr, successEndStr, epilogueEndStr] = labels
         ascmd = DS.toAscList md
 
-    oldVals <- getVars ascmd
+    oldVals <- mapM getVar ascmd
     reg_ft <- preallocRegisters (zip ascmd (map fst oldVals))
     setVars ascmd (map fst reg_ft)
 
@@ -363,7 +383,7 @@ translateInstr name bb stmt = case stmt of
       \name ->
         withProtectedVars ascmd $ do
         sbb <- translateBlock name ib bbNew
-        sVal <- mapM getVar ascmd
+        sVal <- getVars ascmd
         let sbb' = bbaddInstr (VoidReg, jump successEndStr) sbb
             epilogue = bbBuildNamed (bbaddInstr (VoidReg, jump postEtStr) bbNew) successEndStr
             sbb'' = bbaddBlock epilogue sbb'
@@ -402,7 +422,7 @@ translateInstr name bb stmt = case stmt of
                   in
                   (ssaa', regmap', venv', (r', rtype):list)) (fccSSAAloc fcc, fccRegMap fcc, venv, []) names
         modify (fccPutSSAAloc ssaa' . fccPutVenv venv . fccPutRegMap regmap')
-        return list
+        return (reverse list)
 
   Tr.ISExp ie -> fst <$> translateExpr' bb ie False
   Tr.IStmtEmpty -> return bb
@@ -450,9 +470,7 @@ compileProg ifun = let
                                 then (r:)
                                 else id))
                   [] externalFunctions
-  _ftypeMapInit = DM.fromList [("printInt", Void), ("printString", Void),
-                               ("readInt", Int), ("readString", DynamicStringPtr),
-                               ("error", Void)]
+  _ftypeMapInit = DM.fromList (map (BiFunctor.second fst) externalFunctions)
   _ftypeMap :: DM.Map String FCType
   _ftypeMap = foldl' (\map (Tr.IFun fname ltype _ _) -> DM.insert fname (convert ltype) map) _ftypeMapInit ifun
   funEnv = FCCFE _ftypeMap (Tr.dynamicFunctions funMetadata)
@@ -531,7 +549,8 @@ openFunBlock fname lret args =
     fcc <- get
     let
       blockStates = [0]
-      regst = fccRegMap fcc
+      (FCRegMap regval valreg) = fccRegMap fcc
+      regst = _openClosureRM (FCRegMap (VE.openClosure VE.newVarEnv) valreg)
       ssa = fccSSAAloc fcc
       varenv = VC.openClosure $ fccVenv fcc
       len = length args
@@ -559,8 +578,9 @@ closeFunBlock :: FCCompiler ()
 closeFunBlock = do
   fcc <- get
   let ve' = VE.closeClosure (fccVenv fcc)
+      regmap' = _closeClosureRM (fccRegMap fcc)
   checkVarEnv ve'
-  modify $ fccPutVenv ve'
+  modify $ fccPutVenv ve' . fccPutRegMap regmap'
   where
     checkVarEnv :: FCVarEnv -> FCCompiler ()
     checkVarEnv  (VE.VarEnv map s1 s2) = do

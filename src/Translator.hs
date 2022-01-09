@@ -53,8 +53,12 @@ type VariableEnvironment = VarEnv String IType
 
 data IType = StaticInt Integer | DynamicInt | StaticBool Bool | DynamicBool |
               StaticString String | DynamicString | IVoid
+  deriving Eq
 
 data MetaData = MD {modVars :: DS.Set String}
+
+instance Show MetaData where
+  show (MD md) = "(MD $ DS.fromList " ++ show (DS.toList md) ++ ")"
 
 data IStmt =  IBStmt IBlock |
   IDecl [IItem] |
@@ -68,17 +72,20 @@ data IStmt =  IBStmt IBlock |
   IWhile IExpr IBlock MetaData|
   ISExp IExpr |
   IStmtEmpty
+  deriving Show
 
 newtype IBlock = IBlock [IStmt]
+  deriving Show
 
 data IItem = IItem String IExpr
+  deriving Show
 
 data IMulOp = ITimes | IDiv | IMod
-  deriving Eq
+  deriving (Eq, Show)
 data IAddOp = IPlus | IMinus
-  deriving Eq
+  deriving (Eq, Show)
 data IRelOp = ILTH | ILE | IGTH | IGE | IEQU | INE
-  deriving Eq
+  deriving (Eq, Show)
 
 data IExpr = IVar String |
   ILitInt Integer |
@@ -92,9 +99,10 @@ data IExpr = IVar String |
   IAdd IAddOp IExpr IExpr |
   IMul IMulOp IExpr IExpr |
   IRel IRelOp IExpr IExpr
-  deriving Eq
+  deriving (Eq, Show)
 
 data IFun = IFun String LType [(String, LType)] IBlock
+  deriving Show
 type FunctionData = (LType, [LType])
 type FunctionEnvironment = DM.Map String FunctionData
 type FunContext = (LType, String, (Int, Int))
@@ -146,8 +154,18 @@ getFunctionEnvironment (Program _ topDef) =
                               fd <- getFunctionData topDef;
                               DM.insert topName fd <$> fe)
     initialEnvironment :: FunctionEnvironment
-    initialEnvironment = DM.fromList [("printInt", (LVoid, [LInt])), ("printString", (LVoid, [LString])),
-                                     ("error", (LVoid, [])), ("readInt", (LInt, [])), ("readString", (LString, []))]
+    initialEnvironment = DM.fromList [("printInt", (LVoid, [LInt])),
+                                      ("printString", (LVoid, [LString])),
+                                     ("error", (LVoid, [])),
+                                     ("readInt", (LInt, [])),
+                                     ("readString", (LString, [])),
+                                     ("_strconcat", (LString, [LString, LString])),
+                                     ("_strle", (LBool, [LString, LString])),
+                                     ("_strlt", (LBool, [LString, LString])),
+                                     ("_strge", (LBool, [LString, LString])),
+                                     ("_strgt", (LBool, [LString, LString])),
+                                     ("_streq", (LBool, [LString, LString])),
+                                     ("_strneq", (LBool, [LString, LString]))]
     result = Prelude.foldl (flip checkFunction) (return $ return initialEnvironment) topDef
   in
     evalState result DM.empty
@@ -158,6 +176,22 @@ lTypeToIType LBool = DynamicBool
 lTypeToIType LString = DynamicString
 lTypeToIType _ = undefined
 
+
+_strle :: IExpr -> IExpr -> IExpr
+_strle ie1 ie2 = IApp "_strle" [ie1, ie2]
+_strlt :: IExpr -> IExpr -> IExpr
+_strlt ie1 ie2 = IApp "_strlt" [ie1, ie2]
+_strge :: IExpr -> IExpr -> IExpr
+_strge ie1 ie2 = IApp "_strge" [ie1, ie2]
+_strgt :: IExpr -> IExpr -> IExpr
+_strgt ie1 ie2 = IApp "_strgt" [ie1, ie2]
+_streq :: IExpr -> IExpr -> IExpr
+_streq ie1 ie2 = IApp "_streq" [ie1, ie2]
+_strneq :: IExpr -> IExpr -> IExpr
+_strneq ie1 ie2 = IApp "_strneq" [ie1, ie2]
+_strconcat :: IExpr -> IExpr -> IExpr
+_strconcat ie1 ie2 = IApp "_strconcat" [ie1, ie2]
+
 f :: Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
 f (ELitInt _ x) = return (StaticInt x, ILitInt x)
 f (ELitTrue _) = return (StaticBool True, ILitBool True)
@@ -166,7 +200,21 @@ f (EString _ str) = return (StaticString str, IString str)
 f e@(Not pos expr) = do
   (etype, iexp) <- exprToInternal expr
   unless (etype `same` LBool) $ throwErrorInContext (TypeConflict (getPosition e) LBool (cast etype))
-  return (etype, INot iexp)
+  let res = case iexp of
+              INot iexp' -> iexp'
+              IRel op ie1 ie2 -> let
+                x=0
+                op' = case op of
+                  ILTH -> IGE
+                  ILE -> IGTH
+                  IGTH -> ILE
+                  IGE -> ILTH
+                  IEQU -> INE
+                  INE -> IEQU
+                in
+                IRel op' ie1 ie2
+              _ -> INot iexp
+  return (etype, res)
 f (EOr pos e1 e2) = let
   x :: (IType, IExpr) -> Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
   x (StaticBool False, _) exp =
@@ -233,15 +281,33 @@ f (EAdd pos e1 op e2) =
       return $ (\z -> (StaticInt z, ILitInt z)) $ appOp op x y
     helper left right op = do
       assertOp op (fst left) (fst right)
-      return (if fst left `same` LInt then DynamicInt else DynamicString,
-              IAdd (addtoIAdd op) (snd left) (snd right))
+      let rettype = if fst left `same` LInt then DynamicInt else DynamicString
+          retfun = if fst left `same` LInt then IAdd (addtoIAdd op) else _strconcat
+      return (rettype, retfun (snd left) (snd right))
   in
     do
       result1 <- f e1
       result2 <- f e2
       helper result1 result2 op
 
+
 f (ERel pos e1 op e2) = let
+  g :: RelOp -> (IType, IExpr) -> (IType, IExpr) -> (IType, IExpr)
+  g op (t1,ie1) (t2, ie2) =
+    let fun = (case op of
+                  LTH ma -> (IRel (reltoIRel op), _strlt)
+                  LE ma -> (IRel (reltoIRel op), _strle)
+                  GTH ma -> (IRel (reltoIRel op), _strgt)
+                  GE ma -> (IRel (reltoIRel op), _strge)
+                  EQU ma -> (IRel (reltoIRel op), _streq)
+                  NE ma -> (IRel (reltoIRel op), _strneq))
+        x = case (t1, t2) of
+          (DynamicString, _) -> snd
+          (_, DynamicString) -> snd
+          (StaticString{}, StaticString{}) -> undefined
+          _ -> fst
+    in
+      (DynamicBool, (x fun) ie1 ie2)
   helper :: RelOp -> (IType, IExpr) -> (IType, IExpr) -> (IType, IExpr)
   helper op (StaticInt x, _) (StaticInt y, _) =
     (\boolean -> (StaticBool boolean, ILitBool boolean)) (appOp op x y)
@@ -249,13 +315,14 @@ f (ERel pos e1 op e2) = let
     (\boolean -> (StaticBool boolean, ILitBool boolean)) (appOp op x y)
   helper op (StaticString x, _) (StaticString y, _) =
     (\boolean -> (StaticBool boolean, ILitBool boolean)) (appOp op x y)
-  helper op (_, left) (_, right)  = (DynamicBool, IRel (reltoIRel op) left right)
+  helper op ie1 ie2  = g op ie1 ie2
   in
     do
       r1@(it1, ie1) <- exprToInternal e1
       r2@(it2, ie2) <- exprToInternal e2
       assertOp op it1 it2
       return $ helper op r1 r2
+
 f (EVar pos (Ident varId)) = do
   (_, vEnv) <- get
   let var = varId `lookupVar` vEnv
@@ -459,18 +526,25 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
           else BiFunctor.first (icond:) <$> stmtsToInternal rest
 
 stmtsToInternal ((While pos expr stmt md):rest) = do
+  let ascmd = DS.toAscList  md
+  (_, venv)<- get
+  let venv' = makeDynamic ascmd venv
+  modify $ BiFunctor.second (const venv')
+  modify $ BiFunctor.second (protectVars_ ascmd)
+
   (itype, iexpr) <- exprToInternal expr
   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
   case itype of
-    (StaticBool False) -> stmtsToInternal rest
+    (StaticBool False) -> modify (BiFunctor.second endProtection) >> stmtsToInternal rest
     _ -> do
-      (_, venv)<- get
-      let ascmd = toList md
-      modify $ BiFunctor.second (protectVars ascmd (toDynamic ascmd venv))
       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
       modify $ BiFunctor.second endProtection
       BiFunctor.first (IWhile iexpr iblock (MD md):) <$> stmtsToInternal rest
   where
+    makeDynamic :: [String] -> VariableEnvironment -> VariableEnvironment
+    makeDynamic s venv = foldl (\venv (key, val) -> VE.setVar key val venv) venv (zip s t)
+      where
+        t = toDynamic s venv 
     toDynamic :: [String] -> VariableEnvironment -> [IType]
     toDynamic ss venv = map
       (\key ->
@@ -739,10 +813,13 @@ functionMetaDataNew ifuns =
         in
           buildDynamic map emplaced' (DS.union emplaced' set)
       _depMap = buildDepMap y
-      _external = ["printInt", "printString", "error", "readInt", "readString"]
-      _externalFunSet = DS.fromList _external
-      _dynamicFunctions = buildDynamic _depMap _externalFunSet _externalFunSet
-      _somehowCalledFun = DS.intersection _externalFunSet $
+      _externalDyn = ["printInt", "printString", "error", "readInt", "readString"]
+      _externalFun = ["printInt", "printString", "error", "readInt", "readString",
+                      "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
+                      "_strneq"]
+      _externalFunDSet = DS.fromList _externalDyn
+      _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
+      _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
                           foldl (\set pair -> set `DS.union` snd pair) DS.empty y
   in
     FM _somehowCalledFun _dynamicFunctions
@@ -798,7 +875,7 @@ olsOpenBlock :: OptimizeLoopSt -> OptimizeLoopSt
 olsOpenBlock (m1, m2, m3, m4) = (m1, m2, VE.openClosure m3, m4)
 olsCloseBlock :: OptimizeLoopSt -> OptimizeLoopSt
 olsCloseBlock (m1, m2, m3, m4) = (m1, m2, VE.closeClosure m3, m4)
--- olsProtectVars :: [String] -> OptimizeLoopSt -> OptimizeLoopSt
+-- olsProtecttVars :: [String] -> OptimizeLoopSt -> OptimizeLoopSt
 -- olsProtectVars vars (m1, m2, m3, m4) = (m1, m2, VE.protectVars_ vars m3, m4)
 -- olsEndProtection :: OptimizeLoopSt -> OptimizeLoopSt
 -- olsEndProtection (m1, m2, m3, m4) = (m1,  m2, VE.endProtection m3, m4)
@@ -977,7 +1054,7 @@ trOptimizeLoop dfuns (IBlock stmts) =
             return (ie', ib')
           ((ie', ib'), (_,_,_, da)) = flip runState (olsInit (DS.toList md)) $ runReaderT monad dfuns
           newWhile = IWhile ie' ib' (MD md)
-          
+
           -- z = IBStmt $ IBlock $ map (\(s, iexp) ->IDecl [IItem s iexp] ) (reverse da)
           z = undefined  -- To powinno być if else
           newStmt = if null da

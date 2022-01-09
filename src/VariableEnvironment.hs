@@ -85,7 +85,7 @@ instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
   protectVars keys  vals  venv = foldl
     (\venv (key, val) -> if containsVar key venv then declareVar key val venv else venv)
     (openClosure venv)
-    [(key, val) | key <- keys, val <- vals]
+    (zip keys vals)
   protectVars_ keys  venv = foldl
     (\venv key -> case lookupVar key venv of
         Just val -> declareVar key val venv

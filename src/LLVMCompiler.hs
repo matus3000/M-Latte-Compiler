@@ -81,7 +81,10 @@ llvmBuildBuilder rettype bb = let
       [l1] -> l1:rest
       (l1:l2:l3) ->
         case (l1, l2) of
-          (LL s1, LL s2) -> f (FC_ (VoidReg, jump s1):l2:l3) (l1:rest)
+          (LL s1, l2) -> flip f (l1:rest) $
+                         if not (changesFlow l2)
+                         then  FC_ (VoidReg, jump s1):l2:l3
+                         else  l2:l3
           _ -> if changesFlow l1 && changesFlow l2
                then f (l2:l3) rest
                else f (l2:l3) (l1:rest)
@@ -144,7 +147,7 @@ instance Outputable FCRValue where
       outputPhiArg :: FCRegister -> FCRegister -> String
       outputPhiArg rval rfrom = "[" ++ output rval ++", " ++ output rfrom ++ "]"
   output (FCJump register) = "br label " ++ output register
-  output (FCCondJump c1 s f) = "br i8 " ++ output c1 ++ ", label "
+  output (FCCondJump c1 s f) = "br i1 " ++ output c1 ++ ", label "
     ++ output s ++ ", label " ++ output f
   output (FunCall rtype fname args) = "call " ++ outputFun fname rtype args
   output (GetPointer{}) = "Obecnie nie zdefiniowana"
@@ -180,7 +183,7 @@ instance Outputable LLVMModule where
   output (LLVMModule exts consts list) =
     concatMap (\(reg,str)-> outputConstant reg str ++ "\n") consts
     ++ (if null consts then "" else "\n") ++
-    concatMap (\(name, (rtype, args))-> outputExternalFunction name rtype args) exts
+    concatMap (\(name, (rtype, args))-> outputExternalFunction name rtype args ++ "\n") exts
     ++ (if null consts then "" else "\n") ++
     concatMap (\x -> output x ++ "\n\n") list
     where

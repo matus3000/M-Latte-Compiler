@@ -28,8 +28,8 @@ src/Latte/Lex.hs : src/Latte/Lex.x
 build/Main: Main.hs $(objects) 
 	${GHC} $< -O -isrc -odir build -o $@
 
-lib/runtime.bc : lib/runtime.c
-	clang -O0 -o $@ -emit-llvm -S $<
+lib/runtime.bc : lib/runtime.ll
+	llvm-as $<
 clean:
 	-rm -rf build
 	-rm -f $(addprefix src/Latte/, Par.hs Lex.hs Par.info)

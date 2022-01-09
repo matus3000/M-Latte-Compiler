@@ -46,11 +46,19 @@ compile program =
     iprogram <- (programToInternal . IDef.preprocessProgram) program
     return $ LLVM.compile (compileProg  iprogram)
 
+translate :: Lt.Program  -> CompilerExcept [IFun]
+translate program =
+  do
+    (programToInternal . IDef.preprocessProgram) program
+
 argumentError = 1
 grammarError = 2
 
 putStrLnStderr :: String -> IO()
 putStrLnStderr = hPutStrLn stderr
+
+test :: Bool
+test = False
 
 runCompiler :: ParseFun Lt.Program -> String -> IO ()
 runCompiler p s =
@@ -60,14 +68,16 @@ runCompiler p s =
       putStrLnStderr err
       exitWith (ExitFailure grammarError)
     Right program -> do
-      case runExcept $ compile program of
+      case runExcept $ translate program of
         Left err -> do
           putStrLnStderr "ERROR"
           putStrLnStderr $ errorToString err
           exitWith (ExitFailure argumentError)
-        Right code ->
+        Right tcode ->
           do
+            let code = LLVM.compile $ compileProg tcode
             putStrLnStderr "OK"
+            when test (putStrLnStderr (show tcode))
             putStr code
             exitSuccess
   where

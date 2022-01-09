@@ -213,8 +213,12 @@ f e@(Not pos expr) = do
                   INE -> IEQU
                 in
                 IRel op' ie1 ie2
+              ILitBool x -> ILitBool (not x)
               _ -> INot iexp
-  return (etype, res)
+      etype' = case etype of
+                 StaticBool x -> StaticBool (not x)
+                 _ -> etype
+  return (etype', res)
 f (EOr pos e1 e2) = let
   x :: (IType, IExpr) -> Expr -> Compiler FunTranslationEnvironment (IType, IExpr)
   x (StaticBool False, _) exp =

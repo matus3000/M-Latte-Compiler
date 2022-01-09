@@ -92,7 +92,7 @@ data BlockBuilder = BB {instrAcc::[FCInstr], subBlockName:: String,  blockAcc::[
 bbaddBlock :: FCBlock -> BlockBuilder -> BlockBuilder
 bbaddBlock block bb = case (instrAcc bb, subBlockName bb) of
   ([], "") -> BB [] "" (block:blockAcc bb)
-  ([], str) -> error "I haven't thought out that one yet."
+  -- ([], str) -> error "I haven't thought out that one yet."
   (list, str) -> BB [] "" (block:FCNamedSBlock str (reverse list) ():blockAcc bb)
 
 bbaddInstr :: FCInstr -> BlockBuilder -> BlockBuilder
@@ -158,8 +158,11 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
         (cb, (_, jreg)) <- withOpenBlock Check $ \bname ->
           BiFunctor.first bbBuildAnonymous <$> translateExpr bname bbNew  ie True
 
-        (sb, sreg, sbn) <- withPrenamedOpenBlock successEt Success $
+        (sb, sreg, sbn) <- withOpenBlock Success $
           \bname -> f bname bbNew ies (failureEt, postEt)
+            -- successBlock <- f bname bbNew ies (failureEt, postEt)
+            -- return $ bbBuildAnonymous (bbaddInstr (VoidReg, jump postEt) $
+            --                            bbaddBlock successBlock bbNew)
 
         (fb, (_, _)) <- withPrenamedOpenBlock failureEt Failure $ \bname -> do
           return (bbBuildNamed (bbaddInstr (VoidReg , jump postEt) bbNew) bname,

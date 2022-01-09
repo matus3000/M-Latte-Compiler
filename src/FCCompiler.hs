@@ -38,6 +38,7 @@ import qualified VariableEnvironment as Ve
 import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 import Data.List (nub)
 import Gsce (gcseOptimize)
+import DeadCodeRemoval (removeDeadCode)
 
 externalFunctions :: [([Char], (FCType, [FCType]))]
 externalFunctions = [("printString", (Void, [DynamicStringPtr])),
@@ -151,42 +152,45 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
     g bname bb ie rest = do
       withOpenBlock BoolExp $ \bname -> do
 
-        list <- generateLabels 3
-        let [successEt, failureEt, postEt] = list
+        list <- generateLabels 4
+        let [successEt, failureEt, finalSuccessEt, postEt] = list
 
 
         (cb, (_, jreg)) <- withOpenBlock Check $ \bname ->
           BiFunctor.first bbBuildAnonymous <$> translateExpr bname bbNew  ie True
 
-        (sb, sreg, sbn) <- withOpenBlock Success $
-          \bname -> f bname bbNew ies (failureEt, postEt)
-            -- successBlock <- f bname bbNew ies (failureEt, postEt)
-            -- return $ bbBuildAnonymous (bbaddInstr (VoidReg, jump postEt) $
-            --                            bbaddBlock successBlock bbNew)
+        (sb, sreg) <- withPrenamedOpenBlock successEt Success $
+          \bname -> do
+            (successBlock, reg) <- f "" bbNew ies (failureEt, finalSuccessEt)
+            let sb' = flip bbBuildNamed bname $ bbaddBlock (flip bbBuildNamed finalSuccessEt $
+                                 bbaddInstr (VoidReg, jump postEt) bbNew)
+                      (bbaddBlock successBlock bbNew)
+                  
+            return (sb', reg)
 
         (fb, (_, _)) <- withPrenamedOpenBlock failureEt Failure $ \bname -> do
           return (bbBuildNamed (bbaddInstr (VoidReg , jump postEt) bbNew) bname,
                   (Void, VoidReg))
 
         (pb, res) <- withPrenamedOpenBlock postEt Post $ \bname -> do
-          let phi = FCPhi Bool [(sreg, Et sbn), (LitBool False, Et failureEt)]
+          let phi = FCPhi Bool [(sreg, Et finalSuccessEt), (LitBool False, Et failureEt)]
           (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 
         let returnBlock = FCCondBlock bname cb jreg sb fb pb ()
         return (bbaddBlock returnBlock bb, (Bool, res))
 
-    f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister, String)
+    f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister)
     f bn bb [ie] (_, postEt) = do
       withPrenamedOpenBlock bn Normal $ \bname -> do
         (cbb, (ftype, reg)) <- translateExpr bname bbNew  ie True -- Można zmienić na BIFunctor
-        return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg, bname)
+        return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg)
     f bn bb (ie:rest) (failureEt, postEt) = do
 
         (cb, (_, jreg)) <- withOpenBlock Check $ \bname ->
           (bbBuildAnonymous `BiFunctor.first`) <$> translateExpr bname bbNew  ie True
 
-        (sb, r, bn') <- withOpenBlock Success $ \bname -> do
+        (sb, r) <- withOpenBlock Success $ \bname -> do
           f bname bbNew rest (failureEt, postEt)
 
         (fb, (_, _)) <- withOpenBlock Failure $ \bname -> do
@@ -194,7 +198,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
 
         let returnBlock = FCPartialCond bn cb jreg sb fb ()
 
-        return (returnBlock, r, bn')
+        return (returnBlock, r)
 translateOrExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool
   -> FCCompiler (BlockBuilder, (FCType, FCRegister))
 translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
@@ -204,8 +208,8 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
     g bname bb ie rest = do
       withOpenBlock BoolExp $ \bname -> do
 
-        list <- generateLabels 3
-        let [successEt, failureEt, postEt] = list
+        list <- generateLabels 4
+        let [successEt, failureEt, finalFailure, postEt] = list
 
         (cb, (_, jreg)) <- withOpenBlock Check $ \bname ->
           BiFunctor.first bbBuildAnonymous <$> translateExpr bname bbNew  ie True
@@ -214,22 +218,27 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
           return (bbBuildNamed (bbaddInstr (VoidReg , jump postEt) bbNew) bname,
                   (Void, VoidReg))
 
-        (fb, sreg, sbn) <- withPrenamedOpenBlock failureEt Failure $
-          \bname -> f bname bbNew ies (successEt, postEt)
+        (fb, sreg) <- withPrenamedOpenBlock failureEt Failure $
+          \bname -> do
+            (failure, sreg) <- f "" bbNew ies (successEt, finalFailure)
+            let fb' = flip bbBuildNamed bname $ bbaddBlock (flip bbBuildNamed finalFailure $
+                                                     bbaddInstr (VoidReg, jump postEt) bbNew)
+                      (bbaddBlock failure bbNew)
+            return (fb', sreg)
 
         (pb, res) <- withPrenamedOpenBlock postEt Post $ \bname -> do
-          let phi = FCPhi Bool [(LitBool True, Et successEt), (sreg, Et sbn)]
+          let phi = FCPhi Bool [(LitBool True, Et successEt), (sreg, Et finalFailure)]
           (bb', r)<- emplaceFCRValue phi bbNew
           return (bbBuildNamed bb' bname, r)
 
         let returnBlock = FCCondBlock bname cb jreg sb fb pb ()
         return (bbaddBlock returnBlock bb, (Bool, res))
 
-    f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister, String)
+    f :: String -> BlockBuilder -> [Tr.IExpr] -> (String, String) -> FCCompiler (FCBlock, FCRegister)
     f bn bb [ie] (_, postEt) = do
       withPrenamedOpenBlock bn Normal $ \bname -> do
         (cbb, (ftype, reg)) <- translateExpr bname bbNew  ie True -- Można zmienić na BIFunctor
-        return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg, bname)
+        return (bbBuildNamed (bbaddInstr (VoidReg, jump postEt) cbb) bname, reg)
 
     f bn bb (ie:rest) (successEt, postEt) = do
 
@@ -239,12 +248,12 @@ translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
         (sb, (_, _)) <- withOpenBlock Success $ \bname -> do
           return (bbBuildNamed (bbaddInstr (VoidReg , jump successEt) bbNew) bname, (Void, VoidReg))
 
-        (fb, r, bn') <- withOpenBlock Failure $ \bname -> do
+        (fb, r) <- withOpenBlock Failure $ \bname -> do
           f bname bbNew rest (successEt, postEt)
 
         let returnBlock = FCPartialCond bn cb jreg sb fb ()
 
-        return (returnBlock, r, bn')
+        return (returnBlock, r)
 
 
 translateExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
@@ -452,8 +461,11 @@ translateFun (Tr.IFun s lt lts ib) = do
       fbodyBB <- translateBlock s ib bbNew
       dynamicFuns <- asks fccfeDynamicFuns
       let
+        optimize :: FCBlock -> FCBlock
+        optimize = snd . removeDeadCode dynamicFuns DS.empty
+        -- optimize=id
         fbody = bbBuildAnonymous fbodyBB
-        fbody' = gcseOptimize dynamicFuns fbody
+        fbody' = optimize fbody
       return $ FCFun' {name = s, retType = convert lt, args = res, FCT.body = fbody'}
 
 

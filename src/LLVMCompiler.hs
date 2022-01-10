@@ -8,6 +8,8 @@ import FCCompiler (bbaddInstr)
 import Control.Monad.State (modify, State, MonadState(put, get), execState)
 import Control.Monad.Reader (ReaderT, ask, asks, local, runReaderT)
 import Control.Monad.State (unless)
+import Data.Char(ord)
+import Numeric(showHex)
 
 type ExternalImport = (String, (FCType, [FCType]))
 data LLVMInstr = FC_ FCInstr | LL String
@@ -179,6 +181,8 @@ instance Outputable LLVMFunDecl where
       outputArgs = foldr (\(ftype, freg) s ->
                         output ftype ++ " " ++ output freg ++ (if null s then "" else ", ") ++ s) ""
 
+
+
 instance Outputable LLVMModule where
   output (LLVMModule exts consts list) =
     concatMap (\(reg,str)-> outputConstant reg str ++ "\n") consts
@@ -198,7 +202,16 @@ instance Outputable LLVMModule where
     outputConstant freg@(ConstString x) str = output freg ++ " = internal constant "
       ++ "[" ++ show (1 + length str) ++ "x i8" ++ "] c" ++ "\"" ++ str' ++ "\""
       where
-        str' = str ++ "\\00"
+        escapecharacter :: Char -> [Char]
+        escapecharacter c
+          | (ord c) < 15 = "\\0" ++ showHex (ord c) ""
+          | (ord c) < 31 = "\\" ++ showHex (ord c) ""
+          | c == '\'' || c =='\"' = "\\" ++ showHex (ord c) ""
+          | (ord c) == 127 = "\\"  ++ showHex (ord c) ""
+          | otherwise  = [c]
+        escapestring :: String -> [Char]
+        escapestring s = foldr (\c res -> escapecharacter c ++ res) "" s
+        str' = (escapestring str) ++ "\\00"
     outputConstant _ _ = undefined
 
 compile :: FCProg -> String

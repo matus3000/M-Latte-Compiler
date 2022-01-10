@@ -120,8 +120,6 @@ bbBuildNamed bb name = let
                                                (FCNamedSBlock
                                                (subBlockName bb)
                                                 (reverse instrs) ()):blocks) ()
-bbNameSub :: BlockBuilder -> String -> BlockBuilder
-bbNameSub (BB is _ bs) str = BB is str bs
 bbNew :: BlockBuilder
 bbNew = BB [] "" []
 
@@ -420,7 +418,7 @@ translateInstr name bb stmt = case stmt of
       modify (fccPutRegMap regenv')
       return (bbBuildNamed bb name)
 
-    return $ bbNameSub (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr ()) bb) epilogueEndStr
+    return $ bbaddBlock (FCNamedSBlock epilogueEndStr [] ()) (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr ()) bb)
     where
       preallocRegisters :: [(String, FCType)] -> FCCompiler [(FCRegister, FCType)]
       preallocRegisters names = do

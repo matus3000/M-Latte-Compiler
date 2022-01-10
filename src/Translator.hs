@@ -48,6 +48,7 @@ import DynFlags (GeneralFlag(Opt_BuildDynamicToo))
 import qualified Control.Monad as DS
 import qualified VariableEnvironment as VE
 import qualified VariableEnvironment as DS
+import Data.List (foldl')
 
 type VariableEnvironment = VarEnv String IType
 
@@ -657,8 +658,8 @@ instance Ord a => ApplicativeBiOperator RelOp a Bool where
   appOp (LE _)   = (<=)
   appOp (EQU _)  = (==)
   appOp (NE _)   = (/=)
-  appOp (GTH _)  = (>=)
-  appOp (GE _)   = (>)
+  appOp (GTH _)  = (>)
+  appOp (GE _)   = (>=)
 
 instance ApplicativeBiOperator IAddOp Integer Integer where
   appOp IPlus = (+)
@@ -794,6 +795,28 @@ getCalledFunctions (IFun _ _ _ iblock) =
       x :: IItem -> DS.Set String -> DS.Set String
       x (IItem _ iexp) set = getCalledFunctionExpr iexp set
 
+
+containsPossiblyEndlessLoop :: IFun -> Bool
+containsPossiblyEndlessLoop (IFun _ _ _ iblock) =
+  f1 iblock
+  where
+    f1 :: IBlock -> Bool
+    f1 (IBlock istmts) = any f2 istmts
+    f2 :: IStmt -> Bool
+    f2 istmt = case istmt of
+      IBStmt ib -> f1 ib
+      IDecl iis -> False
+      IAss s ie -> False
+      IIncr s -> False
+      IDecr s -> False
+      IRet ie -> False
+      IVRet -> False
+      ICond ie ib md -> f1 ib
+      ICondElse ie ib ib' md -> any f1 [ib, ib']
+      IWhile ie ib md -> True
+      ISExp ie -> False
+      IStmtEmpty -> False
+
 functionMetaDataNew :: [IFun] -> FunctionMetadata
 functionMetaDataNew ifuns =
   let x = map (const DS.empty) ifuns
@@ -808,6 +831,10 @@ functionMetaDataNew ifuns =
                                                     pname
                                                     (DS.insert fname (DS.empty `fromMaybe`DM.lookup pname map)) map)
                                map set
+      loopingFunctions = foldl' (\set ifun@(IFun fname _ _ _) ->
+                                   if containsPossiblyEndlessLoop ifun
+                                   then DS.insert fname set
+                                   else set) DS.empty ifuns
       buildDynamic :: DM.Map String (DS.Set String) -> DS.Set String -> DS.Set String -> DS.Set String
       buildDynamic map emplaced set = if null emplaced then set else
         let  emplaced' = foldl (\emplaced' name ->
@@ -821,7 +848,7 @@ functionMetaDataNew ifuns =
       _externalFun = ["printInt", "printString", "error", "readInt", "readString",
                       "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
                       "_strneq"]
-      _externalFunDSet = DS.fromList _externalDyn
+      _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
       _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
       _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
                           foldl (\set pair -> set `DS.union` snd pair) DS.empty y

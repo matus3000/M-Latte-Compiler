@@ -549,7 +549,7 @@ stmtsToInternal ((While pos expr stmt md):rest) = do
     makeDynamic :: [String] -> VariableEnvironment -> VariableEnvironment
     makeDynamic s venv = foldl (\venv (key, val) -> VE.setVar key val venv) venv (zip s t)
       where
-        t = toDynamic s venv 
+        t = toDynamic s venv
     toDynamic :: [String] -> VariableEnvironment -> [IType]
     toDynamic ss venv = map
       (\key ->
@@ -675,8 +675,8 @@ instance Ord a => ApplicativeBiOperator IRelOp a Bool where
   appOp ILE   = (<=)
   appOp IEQU  = (==)
   appOp INE   = (/=)
-  appOp IGTH  = (>=)
-  appOp IGE   = (>)
+  appOp IGTH  = (>)
+  appOp IGE   = (>=)
 
 class TypedBiOperator a b where
   assertOp :: a -> b -> b -> Compiler FunTranslationEnvironment ()

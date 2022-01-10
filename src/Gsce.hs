@@ -13,13 +13,9 @@ import qualified Data.List as DL
 import Control.Monad.State.Strict
 import Control.Monad.Except (Except, MonadError)
 
-import CompilationError(SemanticError, SemanticError(CompilationError), SemanticErrorType (oldDefinition))
-import Translator(CompilerExcept, Convertable(..))
 import FCCompilerTypes as FCT
 import qualified Translator as Tr
 import qualified Data.Functor
-import FCCompilerState (VariableEnvironment(..),
-                        ConstantsEnvironment(..))
 import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi),
                         FCType(..),
                         FCBlock(..))
@@ -279,4 +275,4 @@ gcseOptimizeProd dynFun block =
 gcseOptimizeTest :: DS.Set String-> FCBlock -> FCBlock
 gcseOptimizeTest x = id
 
-gcseOptimize = gcseOptimizeTest
+gcseOptimize = gcseOptimizeProd

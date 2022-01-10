@@ -24,7 +24,6 @@ where
 
 import Control.Monad.Except (Except, MonadError)
 import Control.Monad.State.Strict (MonadState, StateT, State, get, put, modify, execState)
-import CompilationError(SemanticError, SemanticError(CompilationError))
 import Translator(CompilerExcept, Convertable(..))
 import Control.Monad.Reader
 import qualified Translator as Tr

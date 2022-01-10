@@ -460,7 +460,10 @@ translateFun (Tr.IFun s lt lts ib) = do
       dynamicFuns <- asks fccfeDynamicFuns
       let
         optimize :: FCBlock -> FCBlock
-        optimize = snd . removeDeadCode dynamicFuns DS.empty
+        optimize =
+          snd . removeDeadCode dynamicFuns DS.empty.
+          gcseOptimize dynamicFuns  .
+          snd . removeDeadCode dynamicFuns DS.empty
         -- optimize=id
         fbody = bbBuildAnonymous fbodyBB
         fbody' = optimize fbody

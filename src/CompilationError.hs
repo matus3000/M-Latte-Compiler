@@ -1,4 +1,4 @@
-module CompilationError (SemanticError(..), SemanticErrorType(..), errorToString) where
+module CompilationError (SemanticError(..), SemanticErrorType(..), errorToString, errorToStringExtended) where
 import IDefinition (LType (LVoid))
 import Prelude hiding (error)
 
@@ -18,19 +18,55 @@ data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LTy
                                             gotPair :: (LType, LType)}
 
 data SemanticError = SemanticError {functionPosition :: (Int, Int),
-                                    error :: SemanticErrorType} |
-                     CompilationError
+                                    error :: SemanticErrorType}
 
 msg :: (Int, Int) -> String
-msg (line, col) = "Error in position (" ++ show line ++ ", " ++ show col ++ "): "
+msg (line, col) = "Error in position (" ++ show line ++ ", " ++ show col ++ "): \n"
+
+printArrow :: Int -> String
+printArrow x = "\ESC[91m" ++ map (const '_') [1..(x-1)] ++ "^\n" -- ++ map (const '_') [1..(x-1)] ++ "|\n"
+  ++ "\ESC[0m"
+
+msgExtended :: (Int, Int) -> [String] -> String
+msgExtended (line, col) _lines = "Error in position (" ++ show line ++ ", " ++ show col ++ "): \n" ++
+  (_lines !! (line - 1)) ++"\n" ++ printArrow col 
+  
 
 errorToString :: SemanticError -> String
 errorToString (SemanticError pos NoMain) = "No main function"
 errorToString err = let
   (line, col) = functionPosition err
   in
-  "Error in function starting at line: " ++ show line ++ " and column " ++ show col ++ "\n" ++ show (error err)
+  "Error in function starting at line: " ++ show line ++ " and column " ++ show col ++ "\n  " ++ show (error err)
 
+errorToStringExtended :: SemanticError -> String -> String
+errorToStringExtended (SemanticError pos NoMain) _ = "No main function"
+errorToStringExtended err text_of_program =
+  let
+    by_line = lines text_of_program
+    (line, col) = functionPosition err
+    funname_ = by_line !! (line - 1)
+    funname = funname_
+    -- funname = -- if (length funname_ < 40) then funname_ ++ "{...}" else funname_ 
+  in
+    "Error in function starting at line: " ++ show line ++ " and column " ++ show col ++ "\n  " ++
+    funname ++ "\n" ++
+    (case err of
+        SemanticError x0 error -> case error of
+          WrongReturnType pos l1 l2 -> msgExtended' pos ++ "Wrong return type - Expected: " ++ show l1 ++ ", got: " ++ show l2
+          RedefinitionOfVariable pos _ x -> msgExtended' pos ++ "Redeclaration of variable: " ++ x
+          RedefinitionOfFunction pos _ x -> msgExtended' pos ++ "Redeclaration of function: " ++ x
+          NoReturnValue lt -> "Lack of return or existence of possible execution path without return. " 
+          UndefinedVar pos x -> msgExtended' pos ++ "Undefined variable: " ++  x
+          UndefinedFun pos x -> msgExtended' pos ++ "Undefined function: " ++  x
+          WrongArgumentCount pos -> msgExtended' pos ++ "Wrong number of arguments to function call"
+          NoMain -> "No main function"
+          DivisionByZero pos -> msgExtended' pos ++ "Division by zero"
+          TypeConflict pos l1 l2 -> msgExtended' pos ++ "TypeConflict - Expected: " ++ show l1 ++ ", got: " ++ show l2
+          BinaryTypeConflict pos pair -> msgExtended' pos ++
+            "TypeConflict - Types do not match binary operator - Got: " ++ show pair
+          where
+            msgExtended' = flip msgExtended by_line)
 instance Show SemanticErrorType where
   showsPrec _ err = showString
     (case err of

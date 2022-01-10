@@ -35,7 +35,7 @@ import Latte.Lex (Token)
 import Latte.Par (myLexer, pProgram)
 
 import Translator
-import CompilationError (errorToString)
+import CompilationError (errorToString, errorToStringExtended)
 
 type Err = Either String
 type ParseFun a = [Token] -> Err a
@@ -71,7 +71,7 @@ runCompiler p s =
       case runExcept $ translate program of
         Left err -> do
           putStrLnStderr "ERROR"
-          putStrLnStderr $ errorToString err
+          putStrLnStderr $ errorToStringExtended err s
           exitWith (ExitFailure argumentError)
         Right tcode ->
           do

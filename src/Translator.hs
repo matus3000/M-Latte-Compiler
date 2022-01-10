@@ -720,7 +720,7 @@ instance TypedBiOperator RelOp LType where
     errorFun :: (Int, Int) -> LType -> LType -> Compiler FunTranslationEnvironment ()
     errorFun pos ltype rtype = do
       (a, b, context) <- gets fst
-      throwError (SemanticError pos $BinaryTypeConflict pos (ltype, rtype))
+      throwError (SemanticError context $BinaryTypeConflict pos (ltype, rtype))
     tmp :: RelOp -> LType -> LType -> Compiler FunTranslationEnvironment ()
     tmp op@(EQU _) x y = do
       unless ((x `same` y) && (x `same` LInt || x `same` LString || x `same` LBool)) $ errorFun (getPosition op) x y

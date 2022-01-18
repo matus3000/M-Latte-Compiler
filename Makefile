@@ -12,9 +12,9 @@ vpath %.o build
 objects = Latte/Abs.hs Latte/Lex.hs Latte/Par.hs IDefinition.hs Translator.hs CompilationError.hs VariableEnvironment.hs FCCompiler.hs FCCompilerTypes.hs Gsce.hs LLVMCompiler.hs DeadCodeRemoval.hs
 compilers = Main.hs
 
-.PHONY: clean
+.PHONY: clean execution
 
-all: build build/Main lib/runtime.bc
+all: build build/Main lib/runtime.bc execution
 
 build:
 	mkdir build
@@ -30,6 +30,9 @@ build/Main: Main.hs $(objects)
 
 lib/runtime.bc : lib/runtime.ll
 	llvm-as $<
+
+execution: latc_llvm
+	chmod +x latc_llvm
 clean:
 	-rm -rf build
 	-rm -f $(addprefix src/Latte/, Par.hs Lex.hs Par.info)

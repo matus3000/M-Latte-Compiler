@@ -14,6 +14,11 @@ separator  Arg "," ;
 
 -- statements ----------------------------------------------
 
+LVar.       LValue ::= Ident;
+LVarMem.    LValue ::= LValue "." Ident;
+LVarArr.    LValue ::= LValue "[" Expr "]";
+
+
 Block.     Block ::= "{" [Stmt] "}" ;
 
 separator  Stmt "" ;
@@ -30,11 +35,11 @@ Init.      Item ::= Ident "=" Expr ;
 
 separator nonempty Item "," ;
 
-Ass.       Stmt ::= Ident "=" Expr  ";" ;
+Ass.       Stmt ::= LValue "=" Expr  ";" ;
 
-Incr.      Stmt ::= Ident "++"  ";" ;
+Incr.      Stmt ::= LValue "++"  ";" ;
 
-Decr.      Stmt ::= Ident "--"  ";" ;
+Decr.      Stmt ::= LValue "--"  ";" ;
 
 Ret.       Stmt ::= "return" Expr ";" ;
 
@@ -56,6 +61,10 @@ Str.       Type ::= "string" ;
 
 Bool.      Type ::= "boolean" ;
 
+Class.     Type ::= Ident;
+
+Array.     Type ::= Type "[]";
+
 Void.      Type ::= "void" ;
 
 internal   Fun. Type ::= Type "(" [Type] ")" ;
@@ -64,7 +73,7 @@ separator  Type "," ;
 
 -- Expressions ---------------------------------------------
 
-EVar.      Expr6 ::= Ident ;
+EVar.      Expr6 ::= LValue ;
 
 ELitInt.   Expr6 ::= Integer ;
 
@@ -90,7 +99,7 @@ EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 
 EOr.       Expr ::= Expr1 "||" Expr ;
 
-coercions  Expr 6 ;
+coercions  Expr 7 ;
 
 separator  Expr "," ;
 

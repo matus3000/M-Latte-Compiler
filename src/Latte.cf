@@ -77,13 +77,19 @@ EVar.      Expr6 ::= LValue ;
 
 ELitInt.   Expr6 ::= Integer ;
 
-ELitTrue.  Expr6 ::= "true" ;
+ELitTrue.  Expr6 ::= "true";
 
-ELitFalse. Expr6 ::= "false" ;
+ELitFalse. Expr6 ::= "false";
+
+ENull.     Expr6 ::= "null";
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
 
 EString.   Expr6 ::= String ;
+
+ENewArray. Expr6 ::= "new" Type "[" Expr "]";
+
+ENewClass. Expr5 ::= "new" Type;
 
 Neg.       Expr5 ::= "-" Expr6 ;
 

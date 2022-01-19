@@ -63,7 +63,7 @@ import Latte.Abs
       HasPosition (..),
       BNFC'Position(..),
       Expr,
-      Expr'(..))
+      Expr'(..), LValue' (LVarMem, LVar, LVarArr))
 import qualified Latte.Abs as Lt
 import Data.Maybe (fromMaybe)
 
@@ -91,9 +91,9 @@ data EnrichedStmt' a
     = Empty a
     | BStmt a (EnrichedBlock' a)
     | Decl a (Type' a) [Item' a]
-    | Ass a Ident (Expr' a)
-    | Incr a Ident
-    | Decr a Ident
+    | Ass a (LValue' a) (Expr' a)
+    | Incr a (LValue' a)
+    | Decr a (LValue' a)
     | Ret a (Expr' a)
     | VRet a
     | Cond a (Expr' a) (EnrichedStmt' a) ModifiedVariables
@@ -116,11 +116,24 @@ preprocessProgram (Lt.Program a topdefs) = Program a topdefs'
 stmtToEnrichedStmt :: Lt.Stmt -> ModifiedVariables -> DeclaredVariables -> (Stmt, ModifiedVariables, DeclaredVariables)
 stmtToEnrichedStmt stmt md rd = case stmt of
   Lt.Empty a -> (Empty a, md, rd)
-  Lt.Ass a (Ident x) rest -> let mv = if x `DS.member` rd then md else DS.insert x md
+  Lt.Ass a lvalue rest -> let mv = case lvalue of
+                                     LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md 
+                                     LVarMem ma lv id -> md
+                                     LVarArr ma lv ex -> md
                              in
-                               (Ass a (Ident x) rest, mv, rd)
-  Lt.Incr a (Ident x) -> (Incr a (Ident x), if x `DS.member` rd then md else DS.insert x md, rd)
-  Lt.Decr a (Ident x) -> (Decr a (Ident x), if x `DS.member` rd then md else DS.insert x md, rd)
+                               (Ass a lvalue rest, mv, rd)
+  Lt.Incr a lvalue -> let md' = case lvalue of
+                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md 
+                                  LVarMem ma lv id -> md
+                                  LVarArr ma lv ex -> md
+                                  in
+                        (Incr a lvalue, md', rd)
+  Lt.Decr a lvalue -> let md' = case lvalue of
+                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md 
+                                  LVarMem ma lv id -> md
+                                  LVarArr ma lv ex -> md
+                                  in
+                        (Decr a lvalue, md', rd)
   Lt.Decl a dtype items -> (Decl a dtype items, md, itemListToRedeclared items rd)
     where
     itemListToRedeclared :: [Item' a] -> DS.Set String -> DS.Set String

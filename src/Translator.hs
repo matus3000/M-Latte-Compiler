@@ -53,14 +53,9 @@ import qualified VariableEnvironment as DS
 import Data.List (foldl')
 
 import Translator.Definitions
+import Translator.TranslatorEnvironment
 
-type VariableEnvironment = VarEnv String IType
-
-type FunctionData = (LType, [LType])
-type FunctionEnvironment = DM.Map String FunctionData
 type FunctionContext = (LType, String, (Int, Int))
-type FunTranslationEnvironment = (FunctionContext, VariableEnvironment)
-type CompilerExcept = Except SemanticError
 type StateStrMap x = State (DM.Map String x)
 
 data ArrayRepresentation = ArrayRepresentation (DM.Map Int IValue) IValue
@@ -129,64 +124,6 @@ withinConditionalBlock f = do
   put state
   return res
 
-getFunctionEnvironment :: Program -> CompilerExcept FunctionEnvironment
-getFunctionEnvironment (Program _ topDef) =
-  let
-    getFunctionData :: TopDef -> CompilerExcept FunctionData
-    getFunctionData f@(FnDef pos returnType id args _) =
-      let
-        argsLTypeList :: [LType]
-        argsLTypeList = Prelude.map getArgLType args
-        returnLtype = convertType returnType
-        getRedefinedArg :: [Arg] -> [Arg] -> Maybe(Arg, Arg)
-        getRedefinedArg x [] = Nothing
-        getRedefinedArg x (y@(Arg _ _ (Ident yid)):ys) =
-          case DL.find (\arg -> yid == getIdStr arg) x of
-            (Just leftMost) -> Just (leftMost, y)
-            Nothing -> getRedefinedArg (y:x) ys
-        redefinedArg = getRedefinedArg [] args
-      in
-        case redefinedArg of
-          Nothing -> return (returnLtype, argsLTypeList)
-          Just (old, new) ->
-            let
-              x :: SemanticErrorType
-              x = RedefinitionOfVariable (getPosition new) (getPosition old) (getIdStr old)
-            in
-              throwError $ SemanticError (getPosition f) x
-    checkFunction :: TopDef -> StateStrMap (Int,Int) (CompilerExcept FunctionEnvironment)
-      -> StateStrMap (Int,Int) (CompilerExcept FunctionEnvironment)
-    checkFunction topDef monad =
-      let topName = getIdStr topDef in
-      monad >>= (\fe ->
-                    do
-                      map <- get
-                      if DM.member topName map then
-                        return $ throwError (SemanticError (getPosition topDef)
-                                             (RedefinitionOfFunction (getPosition topDef)
-                                              ((-1, -1) `fromMaybe` DM.lookup topName map) topName))
-                        else
-                        do
-                          put (DM.insert topName (getPosition topDef) map)
-                          return $ do
-                              fd <- getFunctionData topDef;
-                              DM.insert topName fd <$> fe)
-    initialEnvironment :: FunctionEnvironment
-    initialEnvironment = DM.fromList [("printInt", (LVoid, [LInt])),
-                                      ("printString", (LVoid, [LString])),
-                                     ("error", (LVoid, [])),
-                                     ("readInt", (LInt, [])),
-                                     ("readString", (LString, [])),
-                                     ("_strconcat", (LString, [LString, LString])),
-                                     ("_strle", (LBool, [LString, LString])),
-                                     ("_strlt", (LBool, [LString, LString])),
-                                     ("_strge", (LBool, [LString, LString])),
-                                     ("_strgt", (LBool, [LString, LString])),
-                                     ("_streq", (LBool, [LString, LString])),
-                                     ("_strneq", (LBool, [LString, LString]))]
-    result = Prelude.foldl (flip checkFunction) (return $ return initialEnvironment) topDef
-  in
-    evalState result DM.empty
 
 lTypeToIType :: LType -> IType
 lTypeToIType = id
@@ -692,10 +629,10 @@ errorDivisonByZero :: MulOp -> Compiler a ()
 errorDivisonByZero op = do
   (_, _, pos) <- asks teFunctionContext
   throwError $ SemanticError pos (DivisionByZero (getPosition op))
-assertDivision :: MulOp -> IExpr -> Compiler FunTranslationEnvironment ()
-assertDivision op@(Div pos) (ILitInt 0) = errorDivisonByZero op
-assertDivision op@(Mod pos) (ILitInt 0) = errorDivisonByZero op
-assertDivision _ _= return ()
+-- assertDivision :: MulOp -> IExpr -> Compiler FunTranslationEnvironment ()
+-- assertDivision op@(Div pos) (ILitInt 0) = errorDivisonByZero op
+-- assertDivision op@(Mod pos) (ILitInt 0) = errorDivisonByZero op
+-- assertDivision _ _= return ()
 
 
 instance TypedBiOperator MulOp IType where

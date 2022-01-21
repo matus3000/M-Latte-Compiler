@@ -26,6 +26,16 @@ transProgram x = case x of
 transTopDef :: Show a => Latte.Abs.TopDef' a -> Result
 transTopDef x = case x of
   Latte.Abs.FnDef _ type_ ident args block -> failure x
+  Latte.Abs.ClassDef _ ident classmemberdefs -> failure x
+  Latte.Abs.ClassDefExtends _ ident1 ident2 classmemberdefs -> failure x
+
+transClassMemberDef :: Show a => Latte.Abs.ClassMemberDef' a -> Result
+transClassMemberDef x = case x of
+  Latte.Abs.FieldDecl _ type_ fielddeclitems -> failure x
+
+transFieldDeclItem :: Show a => Latte.Abs.FieldDeclItem' a -> Result
+transFieldDeclItem x = case x of
+  Latte.Abs.FieldDeclItem _ ident -> failure x
 
 transArg :: Show a => Latte.Abs.Arg' a -> Result
 transArg x = case x of

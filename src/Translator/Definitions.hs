@@ -6,6 +6,8 @@ import IDefinition (LType(..))
 import qualified Data.Set as DS
 import Latte.Abs
 
+type CompilerExcept = Except SemanticError
+
 type IType = LType
 
 data MetaData = MD {modVars :: DS.Set String}

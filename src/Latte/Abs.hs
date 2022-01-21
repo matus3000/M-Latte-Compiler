@@ -23,7 +23,18 @@ data Program' a = Program a [TopDef' a]
   deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
 
 type TopDef = TopDef' BNFC'Position
-data TopDef' a = FnDef a (Type' a) Ident [Arg' a] (Block' a)
+data TopDef' a
+    = FnDef a (Type' a) Ident [Arg' a] (Block' a)
+    | ClassDef a Ident [ClassMemberDef' a]
+    | ClassDefExtends a Ident Ident [ClassMemberDef' a]
+  deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
+
+type ClassMemberDef = ClassMemberDef' BNFC'Position
+data ClassMemberDef' a = FieldDecl a (Type' a) [FieldDeclItem' a]
+  deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
+
+type FieldDeclItem = FieldDeclItem' BNFC'Position
+data FieldDeclItem' a = FieldDeclItem a Ident
   deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
 
 type Arg = Arg' BNFC'Position
@@ -129,6 +140,16 @@ instance HasPosition Program where
 instance HasPosition TopDef where
   hasPosition = \case
     FnDef p _ _ _ _ -> p
+    ClassDef p _ _ -> p
+    ClassDefExtends p _ _ _ -> p
+
+instance HasPosition ClassMemberDef where
+  hasPosition = \case
+    FieldDecl p _ _ -> p
+
+instance HasPosition FieldDeclItem where
+  hasPosition = \case
+    FieldDeclItem p _ -> p
 
 instance HasPosition Arg where
   hasPosition = \case

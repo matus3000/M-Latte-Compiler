@@ -4,9 +4,16 @@ entrypoints Program ;
 
 Program.   Program ::= [TopDef] ;
 
-FnDef.	   TopDef ::= Type Ident "(" [Arg] ")" Block ;
-
+FnDef.	           TopDef ::= Type Ident "(" [Arg] ")" Block ;
+ClassDef.          TopDef ::= "class" Ident "{" [ClassMemberDef] "}";
+ClassDefExtends.   TopDef ::= "class" Ident "extends" Ident "{" [ClassMemberDef] "}";
 separator nonempty TopDef "" ;
+
+FieldDecl.  ClassMemberDef ::= Type [FieldDeclItem] ";";
+separator nonempty ClassMemberDef "";
+
+FieldDeclItem. FieldDeclItem ::= Ident;
+separator nonempty FieldDeclItem ",";
 
 Arg. 	   Arg ::= Type Ident;
 
@@ -140,4 +147,3 @@ comment    "#" ;
 comment    "//" ;
 
 comment    "/*" "*/" ;
-

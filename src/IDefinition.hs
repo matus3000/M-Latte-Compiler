@@ -66,9 +66,10 @@ import Latte.Abs
       BNFC'Position(..),
       Expr,
       LValue,
-      Expr'(..), LValue' (LVarMem, LVar, LVarArr))
+      Expr'(..), LValue' (LVarMem, LVar, LVarArr), ClassMemberDef')
 import qualified Latte.Abs as Lt
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust, fromJust, catMaybes)
+import Data.Maybe (mapMaybe)
 
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType | LClass String |
   LGenericClass String [LType]
@@ -81,10 +82,14 @@ type ModifiedVariables = Set String
 type DeclaredVariables = Set String
 
 type Program = EnrichedProgram' BNFC'Position
-data EnrichedProgram' a = Program a [EnrichedTopDef' a]
+data EnrichedProgram' a = Program a [EnrichedTopDef' a] [EnrichedClassDef' a]
 
 type TopDef = EnrichedTopDef' BNFC'Position
 data EnrichedTopDef' a = FnDef a (Type' a) Ident [Arg' a] (EnrichedBlock' a)
+
+type ClassDef = EnrichedClassDef' BNFC'Position
+data EnrichedClassDef' a = ClassDef a Ident [ClassMemberDef' a] |
+  ClassDefExtends a Ident Ident [ClassMemberDef' a]
 
 type Block = EnrichedBlock' BNFC'Position
 data EnrichedBlock' a = Block a [EnrichedStmt' a] |
@@ -107,11 +112,18 @@ data EnrichedStmt' a
 
 
 preprocessProgram :: Lt.Program -> Program
-preprocessProgram (Lt.Program a topdefs) = Program a topdefs'
+preprocessProgram (Lt.Program a topdefs) = Program a topdefs' undefined
   where
-    topdefs' = map f topdefs
-    f :: Lt.TopDef -> TopDef
-    f (Lt.FnDef a _type id args block) = FnDef a _type id args (g block)
+    topdefs' = mapMaybe f topdefs
+    classdefs = mapMaybe f' topdefs
+    f' :: Lt.TopDef -> Maybe ClassDef
+    f' (Lt.ClassDef a id members) = Just $ ClassDef a id members
+    f' (Lt.ClassDefExtends a id id2 members) = Just $ ClassDefExtends a id id2 members
+    f' _ = Nothing 
+    f :: Lt.TopDef -> Maybe TopDef
+    f (Lt.FnDef a _type id args block) = Just $ FnDef a _type id args (g block)
+    f Lt.ClassDef{} = Nothing
+    f Lt.ClassDefExtends {} = Nothing
     g :: Lt.Block  -> Block
     g block@(Lt.Block a _) = block'
       where
@@ -121,19 +133,19 @@ stmtToEnrichedStmt :: Lt.Stmt -> ModifiedVariables -> DeclaredVariables -> (Stmt
 stmtToEnrichedStmt stmt md rd = case stmt of
   Lt.Empty a -> (Empty a, md, rd)
   Lt.Ass a lvalue rest -> let mv = case lvalue of
-                                     LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md 
+                                     LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md
                                      LVarMem ma lv id -> md
                                      LVarArr ma lv ex -> md
                              in
                                (Ass a lvalue rest, mv, rd)
   Lt.Incr a lvalue -> let md' = case lvalue of
-                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md 
+                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md
                                   LVarMem ma lv id -> md
                                   LVarArr ma lv ex -> md
                                   in
                         (Incr a lvalue, md', rd)
   Lt.Decr a lvalue -> let md' = case lvalue of
-                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md 
+                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md
                                   LVarMem ma lv id -> md
                                   LVarArr ma lv ex -> md
                                   in

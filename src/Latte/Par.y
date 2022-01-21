@@ -48,20 +48,22 @@ import Latte.Lex
   '[]'      { PT _ (TS _ 23) }
   ']'       { PT _ (TS _ 24) }
   'boolean' { PT _ (TS _ 25) }
-  'else'    { PT _ (TS _ 26) }
-  'false'   { PT _ (TS _ 27) }
-  'if'      { PT _ (TS _ 28) }
-  'int'     { PT _ (TS _ 29) }
-  'new'     { PT _ (TS _ 30) }
-  'null'    { PT _ (TS _ 31) }
-  'return'  { PT _ (TS _ 32) }
-  'string'  { PT _ (TS _ 33) }
-  'true'    { PT _ (TS _ 34) }
-  'void'    { PT _ (TS _ 35) }
-  'while'   { PT _ (TS _ 36) }
-  '{'       { PT _ (TS _ 37) }
-  '||'      { PT _ (TS _ 38) }
-  '}'       { PT _ (TS _ 39) }
+  'class'   { PT _ (TS _ 26) }
+  'else'    { PT _ (TS _ 27) }
+  'extends' { PT _ (TS _ 28) }
+  'false'   { PT _ (TS _ 29) }
+  'if'      { PT _ (TS _ 30) }
+  'int'     { PT _ (TS _ 31) }
+  'new'     { PT _ (TS _ 32) }
+  'null'    { PT _ (TS _ 33) }
+  'return'  { PT _ (TS _ 34) }
+  'string'  { PT _ (TS _ 35) }
+  'true'    { PT _ (TS _ 36) }
+  'void'    { PT _ (TS _ 37) }
+  'while'   { PT _ (TS _ 38) }
+  '{'       { PT _ (TS _ 39) }
+  '||'      { PT _ (TS _ 40) }
+  '}'       { PT _ (TS _ 41) }
   L_Ident   { PT _ (TV _)    }
   L_integ   { PT _ (TI _)    }
   L_quoted  { PT _ (TL _)    }
@@ -84,11 +86,31 @@ Program
 TopDef :: { (Latte.Abs.BNFC'Position, Latte.Abs.TopDef) }
 TopDef
   : Type Ident '(' ListArg ')' Block { (fst $1, Latte.Abs.FnDef (fst $1) (snd $1) (snd $2) (snd $4) (snd $6)) }
+  | 'class' Ident '{' ListClassMemberDef '}' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), Latte.Abs.ClassDef (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1)) (snd $2) (snd $4)) }
+  | 'class' Ident 'extends' Ident '{' ListClassMemberDef '}' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), Latte.Abs.ClassDefExtends (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1)) (snd $2) (snd $4) (snd $6)) }
 
 ListTopDef :: { (Latte.Abs.BNFC'Position, [Latte.Abs.TopDef]) }
 ListTopDef
   : TopDef { (fst $1, (:[]) (snd $1)) }
   | TopDef ListTopDef { (fst $1, (:) (snd $1) (snd $2)) }
+
+ClassMemberDef :: { (Latte.Abs.BNFC'Position, Latte.Abs.ClassMemberDef) }
+ClassMemberDef
+  : Type ListFieldDeclItem ';' { (fst $1, Latte.Abs.FieldDecl (fst $1) (snd $1) (snd $2)) }
+
+ListClassMemberDef :: { (Latte.Abs.BNFC'Position, [Latte.Abs.ClassMemberDef]) }
+ListClassMemberDef
+  : ClassMemberDef { (fst $1, (:[]) (snd $1)) }
+  | ClassMemberDef ListClassMemberDef { (fst $1, (:) (snd $1) (snd $2)) }
+
+FieldDeclItem :: { (Latte.Abs.BNFC'Position, Latte.Abs.FieldDeclItem) }
+FieldDeclItem
+  : Ident { (fst $1, Latte.Abs.FieldDeclItem (fst $1) (snd $1)) }
+
+ListFieldDeclItem :: { (Latte.Abs.BNFC'Position, [Latte.Abs.FieldDeclItem]) }
+ListFieldDeclItem
+  : FieldDeclItem { (fst $1, (:[]) (snd $1)) }
+  | FieldDeclItem ',' ListFieldDeclItem { (fst $1, (:) (snd $1) (snd $3)) }
 
 Arg :: { (Latte.Abs.BNFC'Position, Latte.Abs.Arg) }
 Arg

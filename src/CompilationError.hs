@@ -1,5 +1,5 @@
 module CompilationError (SemanticError(..), SemanticErrorType(..), errorToString, errorToStringExtended) where
-import IDefinition (LType (LVoid))
+import IDefinition (LType (LVoid), LValue)
 import Prelude hiding (error)
 
 data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LType, got :: LType} |
@@ -8,8 +8,8 @@ data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LTy
                          RedefinitionOfFunction {position :: (Int, Int), oldDefinition :: (Int, Int),
                                                  name :: String} |
                          NoReturnValue {returnType :: LType} |
-                         UndefinedVar {position:: (Int, Int), name:: String} |
-                         UndefinedFun {position:: (Int, Int), name:: String} |
+                         UndefinedVar {position:: (Int, Int), name :: String} |
+                         UndefinedFun {position:: (Int, Int), name :: String} |
                          WrongArgumentCount {position::(Int, Int)} |
                          NoMain |
                          DivisionByZero {position:: (Int, Int)} |

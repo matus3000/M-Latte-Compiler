@@ -31,6 +31,8 @@ module IDefinition (LType(..),
                     RelOp'(..),
                     Ident(..),
                     BNFC'Position(..),
+                    LValue'(..),
+                    LValue,
                     convertType,
                     getArgLType,
                     topDefArgs,
@@ -63,11 +65,13 @@ import Latte.Abs
       HasPosition (..),
       BNFC'Position(..),
       Expr,
+      LValue,
       Expr'(..), LValue' (LVarMem, LVar, LVarArr))
 import qualified Latte.Abs as Lt
 import Data.Maybe (fromMaybe)
 
-data LType = LInt | LString | LBool | LVoid | LFun LType [LType]
+data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType | LClass String |
+  LGenericClass String [LType]
   deriving Eq
 
 -- data VarType = StaticInt Int | DynamicInt | StaticBool Bool | DynamicBool |

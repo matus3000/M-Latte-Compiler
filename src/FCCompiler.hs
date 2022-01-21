@@ -280,7 +280,7 @@ translateExpr bname bb ie save =
          (bb',r) <- emplaceFCRValue (BitCast (ConstStringPtr (1 + length s))
                                            constEt DynamicStringPtr) bb
          return (bb', (DynamicStringPtr, r))
-      Tr.IVar s -> (bb, ) <$> getVar s
+      Tr.ILValue (Tr.IVar s) -> (bb, ) <$> getVar s
       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr bb save
       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr bb save
       Tr.INeg ie ->  do
@@ -315,8 +315,6 @@ translateExpr bname bb ie save =
         let args = reverse rargs
         (bb, reg)<- emplaceFCRValue (FunCall rtype fun args) bb'
         return (bb, (rtype, reg))
-
-
       Tr.IRel iro ie ie' -> do
         (bb', (ftype1, r1)) <- translateExpr' bb ie True
         (bb'', (ftype2, r2)) <- translateExpr' bb' ie' True
@@ -336,12 +334,14 @@ translateInstr :: String -> BlockBuilder -> Tr.IStmt -> FCCompiler BlockBuilder
 translateInstr name bb stmt = case stmt of
   Tr.IBStmt ib -> translateBlock name ib bb
   Tr.IDecl iis -> foldlM translateIItem' bb iis
-  Tr.IAss s ie -> do
+  Tr.IAss (Tr.IVar s) ie -> do
     (bb', (ftype, reg)) <- translateExpr' bb ie True
     setVar s reg
     return bb'
-  Tr.IIncr s -> translateInstr' (Tr.IAss s (Tr.IAdd Tr.IPlus (Tr.IVar s) (Tr.ILitInt 1)))
-  Tr.IDecr s -> translateInstr' (Tr.IAss s (Tr.IAdd Tr.IMinus (Tr.IVar s) (Tr.ILitInt 1)))
+  Tr.IIncr (Tr.IVar s) -> translateInstr' (Tr.IAss (Tr.IVar s) (Tr.IAdd
+                                                                Tr.IPlus (Tr.ILValue (Tr.IVar s)) (Tr.ILitInt 1)))
+  Tr.IDecr (Tr.IVar s) -> translateInstr' (Tr.IAss (Tr.IVar s) (Tr.IAdd
+                                            Tr.IMinus (Tr.ILValue (Tr.IVar s)) (Tr.ILitInt 1)))
   Tr.IRet ie -> do
     (bb', (ft, r)) <- translateExpr' bb ie True
     return $ bbaddInstr (VoidReg, Return ft (Just r)) bb'

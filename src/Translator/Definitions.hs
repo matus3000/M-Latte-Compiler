@@ -2,9 +2,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 module Translator.Definitions where
 
-import IDefinition (LType(..))
+import IDefinition (LType(..), EnrichedClassDef')
 import qualified Data.Set as DS
 import Latte.Abs
+import Control.Monad.Except (Except)
+import CompilationError (SemanticError)
 
 type CompilerExcept = Except SemanticError
 
@@ -35,7 +37,7 @@ newtype IBlock = IBlock [IStmt]
 data IItem = IItem String IExpr
   deriving Show
 
-data ILValue = IVar String | IMember String String | IBracketOp String IExpr
+data ILValue = IVar String | IMember ILValue String | IBracketOp String IExpr
   deriving (Eq, Show)
 
 data IExpr = ILitInt Integer |
@@ -103,3 +105,4 @@ instance Ord a => ApplicativeBiOperator IRelOp a Bool where
   appOp INE   = (/=)
   appOp IGTH  = (>)
   appOp IGE   = (>=)
+

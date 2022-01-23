@@ -31,7 +31,7 @@ import CompilationError
 
 import Prelude
 import Data.Foldable (Foldable(toList))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, fromJust)
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
 import Data.List as DL (find)
@@ -54,12 +54,20 @@ import Data.List (foldl')
 
 import Translator.Definitions
 import Translator.TranslatorEnvironment
+    ( getFunctionEnvironment,
+      getStructureEnvironment,
+      StructureEnvironment,
+      FunctionEnvironment,
+      TranslationEnvironment )
 
-type FunctionContext = (LType, String, (Int, Int))
+import qualified Translator.TranslatorEnvironment as TE
+import Translator.ClassRepresentation(ClassRepresentation(..))
+import qualified Translator.ClassRepresentation as TCR
+
+type TranslatorState = (MemoryState, VariableState)
 type StateStrMap x = State (DM.Map String x)
-
 data ArrayRepresentation = ArrayRepresentation (DM.Map Int IValue) IValue
-data ClassRepresentation = ClassRepresentation (DM.Map String IValue) IValue
+
 
 data Allocator = Allocator {alNextArray :: Int,
                            alNextStructure :: Int}
@@ -70,20 +78,22 @@ allocateArray allocator = (Allocator (alNextArray allocator+ 1) (alNextStructure
 allocateStruct :: Allocator -> (Allocator, Reference)
 allocateStruct allocator =(Allocator (alNextArray allocator) (alNextStructure allocator + 1),
                            alNextStructure allocator)
-data MemoryState = MemoryState {msArrays ::DM.Map Reference ArrayRepresentation,
-                                msStructures::DM.Map Reference ClassRepresentation,
-                                msAllocator :: Allocator}
+data MemoryState = MemoryState {msArrays :: DM.Map Reference ArrayRepresentation,
+                                msStructures :: DM.Map Reference ClassRepresentation,
+                                msReferenceToType :: DM.Map Reference String,
+                                msAllocator :: Allocator }
 type VariableState = VE.VarEnv String (IType, IValue)
-type TranslatorState = (MemoryState, VariableState)
 
 tsInit :: TranslatorState
-tsInit = (MemoryState DM.empty DM.empty (Allocator 0 0), VE.newVarEnv)
+tsInit = (MemoryState DM.empty DM.empty DM.empty (Allocator 0 0), VE.newVarEnv)
 tsSetMemState :: MemoryState -> TranslatorState  -> TranslatorState
 tsSetMemState mem (x, y) = (mem, y)
 tsSetVarState :: VariableState -> TranslatorState  -> TranslatorState
 tsSetVarState varst (x, s)= (x, varst)
 tsModifyVarState :: (VariableState -> VariableState) -> TranslatorState -> TranslatorState
 tsModifyVarState f (mem, vars) = (mem, f vars)
+tsModifyMemory :: (MemoryState -> MemoryState) -> TranslatorState -> TranslatorState
+tsModifyMemory f (mem, vars) = (f mem, vars)
 tsMemory :: TranslatorState -> MemoryState
 tsMemory (mem, _) = mem
 tsVarState :: TranslatorState -> VariableState
@@ -100,13 +110,7 @@ defaultValue itype = case itype of
   LClass s -> Null
   LGenericClass s lts -> Null
 
-type TranslatorEnvironment = (FunctionEnvironment, FunctionContext)
-teFunctionEnvironment :: TranslatorEnvironment -> FunctionEnvironment
-teFunctionEnvironment = fst
-teFunctionContext :: TranslatorEnvironment -> FunctionContext
-teFunctionContext = snd
-
-type Compiler varEnv = ReaderT TranslatorEnvironment (StateT varEnv CompilerExcept)
+type Compiler varEnv = ReaderT TranslationEnvironment  (StateT varEnv CompilerExcept)
 
 withOpenBlock :: Compiler TranslatorState a -> Compiler TranslatorState a
 withOpenBlock f = do
@@ -148,8 +152,51 @@ _strneq ie1 ie2 = IApp "_strneq" [ie1, ie2]
 _strconcat :: IExpr -> IExpr -> IExpr
 _strconcat ie1 ie2 = IApp "_strconcat" [ie1, ie2]
 
+newStruct :: String -> IValue -> Compiler TranslatorState Reference
+newStruct className defaultValue = do
+  case defaultValue of
+    Undefined -> return ()
+    RunTimeValue -> return ()
+    _ -> undefined
+  memoryState <- gets tsMemory
+  mClassData <- asks $ TE.lookupClass className
+  let struct = ClassRepresentation DM.empty (fromJust mClassData) defaultValue
+      (allocator', reference) = allocateStruct $ msAllocator memoryState
+      referenceMap = DM.insert reference className $ msReferenceToType memoryState
+      structuresMap = DM.insert reference struct $ msStructures memoryState
+  modify $ tsSetMemState (MemoryState (msArrays memoryState) structuresMap referenceMap allocator')
+  return reference
 
-lvalueToInternal :: LValue -> Compiler TranslatorState (IType, IValue, IExpr)
+setMemberUnsafe ::  Reference -> String -> IValue -> Compiler TranslatorState ()
+setMemberUnsafe ref member ivalue = do
+  z <- gets tsMemory
+  let x = fromJust $ DM.lookup ref (msStructures z)
+      (ClassRepresentation map sd _ivalue) = x
+      newvalue = ClassRepresentation (DM.insert member ivalue map) sd _ivalue
+      newMemory = MemoryState (msArrays z) (DM.insert ref newvalue (msStructures z))
+        (msReferenceToType z) (msAllocator z)
+  modify $ tsSetMemState newMemory
+  return ()
+
+getMemberUnsafe :: Reference -> String -> Compiler TranslatorState IValue
+getMemberUnsafe ref member = do
+  struct <- gets (DM.lookup ref . msStructures . tsMemory)
+  case struct of
+    Just struct@(ClassRepresentation map sd defaultValue) -> do
+      let memberType = fromJust $ TE.sdFieldType member sd
+      case (DM.lookup member map, memberType, defaultValue) of
+        (Just x, _, _) -> return x
+        (Nothing, LClass className, RunTimeValue) -> do
+          memberReference <- newStruct className RunTimeValue
+          let ivalue = OwningReference memberReference
+              updatedParent = fromJust $ TCR.setField member ivalue struct
+          (MemoryState ma ms mr malloc)<- gets tsMemory
+          modify $ tsSetMemState (MemoryState ma (DM.insert ref updatedParent ms) mr malloc)
+          return ivalue
+        (Nothing, _, _) -> return defaultValue
+    Nothing -> undefined
+
+lvalueToInternal :: LValue -> Compiler TranslatorState (IType, IValue, ILValue)
 lvalueToInternal lvalue = let
   pos = getPosition lvalue
   in
@@ -158,11 +205,26 @@ lvalueToInternal lvalue = let
         venv <- gets tsVarState
         case id `lookupVar` venv of
           Nothing -> throwError $ SemanticError pos (UndefinedVar pos id)
-          _ -> undefined
-      LVarMem ma lv id -> undefined
+          Just (itype, ivalue) -> case (itype, ivalue) of
+            (LClass className, RunTimeValue) -> do
+              newReference <-  newStruct className RunTimeValue
+              let ivalue = OwningReference newReference
+              modify $ tsModifyVarState (VE.setVar id (itype, ivalue))
+              return (itype, ivalue, IVar id)
+            _ -> return (itype, ivalue, IVar id)
+      LVarMem ma lv (Ident fieldName) -> do
+        (itype, ivalue, ilvalue) <- lvalueToInternal lv
+        className <-case itype of
+          LClass s -> return s
+          _ -> throwErrorInContext (NotClass (fromJust ma) "")
+        fieldType <- asks $ TE.fieldType className fieldName
+        case ivalue of
+          RunTimeValue -> do undefined
+          OwningReference ref -> do
+            memberValue <- getMemberUnsafe ref fieldName
+            return (fromJust fieldType, memberValue, (IMember ilvalue fieldName))
+          _ -> throwErrorInContext $ NullDereferenc (fromJust ma)
       LVarArr ma lv ex -> undefined
-
-
 
 f :: Expr -> Compiler TranslatorState (IType, IValue, IExpr)
 f (ELitInt _ x) = return (LInt , IValueInt x, ILitInt x)
@@ -202,8 +264,8 @@ f (EOr pos e1 e2) = let
       (itype, ivalue, iRight) <- exprToInternal exp
       case (itype, ivalue) of
         -- (StaticBool True) -> return (DynamicBool, IOr iLeft iRight) -- 30.12 Przed optymalizacją
-        (LBool, (IValueBool True)) -> return (LBool, RunTimeValue, IOr [iLeft, (ILitBool True)])
-        (LBool, (IValueBool False)) -> return left
+        (LBool, IValueBool True) -> return (LBool, RunTimeValue, IOr [iLeft, ILitBool True])
+        (LBool, IValueBool False) -> return left
         (LBool, RunTimeValue)  -> case iRight of
           IOr ies -> return (LBool, RunTimeValue ,IOr (iLeft:ies))
           _ -> return (LBool, RunTimeValue ,IOr [iLeft, iRight])
@@ -279,7 +341,7 @@ f (ERel pos e1 op e2) = let
           (_, LString) -> snd
           _ -> fst
     in
-      (LBool, RunTimeValue, (x fun) ie1 ie2)
+      (LBool, RunTimeValue, x fun ie1 ie2)
   helper :: RelOp -> (IType,IValue, IExpr) -> (IType, IValue, IExpr) -> (IType, IValue, IExpr)
   helper op (LInt, IValueInt x, _ ) (LInt, IValueInt y, _) =
     (\boolean -> (LBool, IValueBool boolean, ILitBool boolean)) (appOp op x y)
@@ -294,25 +356,16 @@ f (ERel pos e1 op e2) = let
       r2@(it2, _, _) <- exprToInternal e2
       assertOpType op it1 it2
       return $ helper op r1 r2
-f (EVar pos lvalue) = do
-  case lvalue of
-    LVar ma (Ident varname) -> do
-      state <- get
-      let varst = tsVarState state
-          x = VE.lookupVar varname varst
-      case x of
-        Nothing -> throwErrorInContext $ UndefinedVar (getPosition lvalue) varname
-        Just (itype, ivalue) -> case ivalue of
-          IValueBool x -> return (itype, ivalue, ILitBool x)
-          IValueInt x -> return (itype, ivalue, ILitInt x)
-          IValueString x -> return (itype, ivalue, IString x)
-          _ -> return (itype, ivalue, ILValue $ IVar varname)
-    LVarMem ma lv id -> undefined
-    LVarArr ma lv ex -> do
-      iexp <- f ex
-      undefined
+f (EVar _ lvalue) = do
+  (itype, ivalue, ilvalue) <- lvalueToInternal lvalue
+  let iexpr =case ivalue of 
+        IValueInt n -> ILitInt n
+        IValueBool b -> ILitBool b
+        IValueString s -> IString s
+        _ -> ILValue ilvalue
+  return (itype, ivalue, iexpr)
 f (EApp pos (Ident funId) exps) = do
-  fEnv <- asks teFunctionEnvironment
+  fEnv <- asks TE.getFunEnv
   let funData = funId `DM.lookup` fEnv
       errPos = (-1, -1) `fromMaybe` pos
   case funData of
@@ -334,7 +387,6 @@ f e0@(Neg pos expr) = do
     case ivalue of
       (IValueInt x) -> (LInt, IValueInt (-x), ILitInt (-x))
       _ -> (LInt, RunTimeValue , INeg iexpr)
-
 simplify :: (IType, IValue, IExpr) -> (IType, IValue, IExpr)
 simplify pair = pair
 
@@ -352,25 +404,20 @@ defaultExpr :: LType -> Expr
 defaultExpr LBool = ELitFalse emptyBNFC'Pos
 defaultExpr LInt = ELitInt emptyBNFC'Pos 0
 defaultExpr LString = EString emptyBNFC'Pos ""
+defaultExpr (LClass _) = ENull emptyBNFC'Pos
 defaultExpr _ = undefined
-
--- iTypeStatic :: IType -> Bool
--- iTypeStatic (StaticInt _) = True
--- iTypeStatic (StaticBool _) = True
--- iTypeStatic (StaticString _) = True
--- iTypeStatic _ = False
 
 throwErrorInContext :: SemanticErrorType -> Compiler b a
 throwErrorInContext errtype  =
   do
-    (a,b, pos) <- asks teFunctionContext
+    (a,b, pos) <- asks TE.getContext
     throwError $ SemanticError pos errtype
 
 
 itemToInternal :: LType -> Item -> Compiler TranslatorState IItem
 itemToInternal varType item = do
   let id = getIdStr item
-  (_, _, pos) <- asks teFunctionContext
+  (_, _, pos) <- asks TE.getContext
   varstate <- gets tsVarState
   if id `DS.member` head (redeclaredVars varstate)
     then throwErrorInContext $ RedefinitionOfVariable (getPosition item) (getPosition item) id
@@ -387,7 +434,7 @@ itemToInternal varType item = do
 -- itemToInternal varType item =
 --   do
 --     let id = getIdStr item
---     context@(ltype, funName, pos) <- asks teFunctionContext
+--     context@(ltype, funName, pos) <- asks TE.getContext
 --     (_, venv) <- get
 --     if id `DS.member` head (redeclaredVars venv)
 --       then throwError $ SemanticError pos (RedefinitionOfVariable (getPosition item) (getPosition item) id)
@@ -474,13 +521,13 @@ stmtsToInternal ((Decr _ (LVar pos (Ident varId))):rest) = do
           return (IDecr (IVar varId):irest, returnBool)
 stmtsToInternal ((Ret pos expr):rest) =
   do
-    (funType, _, _) <- asks teFunctionContext
+    (funType, _, _) <- asks TE.getContext
     (itype, ivalue, iexpr) <- exprToInternal expr
     unless (itype `same` funType) (throwErrorInContext
                                    (WrongReturnType ((-1,-1) `fromMaybe` pos) funType (cast itype)))
     return ([IRet iexpr], True)
 stmtsToInternal ((VRet pos):rest) = do
-  (funType, _, _) <- asks teFunctionContext
+  (funType, _, _) <- asks TE.getContext
   unless (funType `same` LVoid) $ throwErrorInContext
     (WrongReturnType ((-1,-1) `fromMaybe` pos) funType LVoid)
   return ([IVRet], True)
@@ -492,6 +539,7 @@ stmtsToInternal ((Cond pos expr stmt md): rest) = do
     (IValueBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt]):rest)
     _ -> do
       (iblock, returnBoolean) <- withinConditionalBlock $  blockToInternal $ VirtualBlock [stmt]
+      undefined "Należy zmienić struktury na runtime"
       (irest, restBool) <- stmtsToInternal rest
       let icond = ICondElse iexpr iblock (IBlock []) (MD md)
       return (icond:irest, restBool)
@@ -506,7 +554,7 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
 
         (iblock1, returnBoolean1) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt1])
         (iblock2, returnBoolean2) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt2])
-
+        undefined "Należy zmienić struktury na runtime"
         let icond = ICondElse iexpr iblock1 iblock2 (MD md)
         if returnBoolean1 && returnBoolean2
           then return ([icond], True)
@@ -539,9 +587,6 @@ stmtsToInternal ((While pos expr stmt md):rest) = do
             Just (itype, ivalue) -> (itype, RunTimeValue)
             Nothing -> (LVoid, RunTimeValue))
       ss
--- -- New Version --
--- stmtsToInternal ((While pos expr stmt md):rest) = do
---   undefined
 stmtsToInternal ((SExp _ expr):rest) =
   do
     (_, _, iexpr) <- exprToInternal expr
@@ -564,8 +609,8 @@ blockToInternal block =
             list -> IBlock list)
         result
 
-topDefToInternal :: TopDef -> FunctionEnvironment -> CompilerExcept IFun
-topDefToInternal fDef fEnv = let
+topDefToInternal :: TopDef -> FunctionEnvironment -> StructureEnvironment -> CompilerExcept IFun
+topDefToInternal fDef fEnv sEnv = let
   funName = getIdStr fDef
   funArgs = [(getIdStr i, getArgLType i) | i <- topDefArgs fDef]
   retType = fst $ (LVoid, []) `fromMaybe` DM.lookup funName fEnv
@@ -573,8 +618,8 @@ topDefToInternal fDef fEnv = let
   newVarState = foldl (\vEnv (id, ltype) ->
                          declareVar id (ltype, RunTimeValue) vEnv)
                 (openClosure newVarEnv) funArgs
-  tsEnv :: TranslatorEnvironment
-  tsEnv = (fEnv, (retType, funName, getPosition fDef))
+  tsEnv :: TranslationEnvironment
+  tsEnv = (fEnv, sEnv, (retType, funName, getPosition fDef))
   res = (`evalStateT` tsSetVarState newVarState tsInit) $ runReaderT (blockToInternal block) tsEnv
   in
     do
@@ -592,19 +637,20 @@ assertMain fEnv =
       _ -> throwError $ SemanticError (0,0) NoMain
 
 programToInternal :: Program -> CompilerExcept [IFun]
-programToInternal program@(Program _ topDefs) =
+programToInternal program@(Program _ topDefs classDefs) =
   let
     x :: CompilerExcept ()
     x = return ()
-    fun :: FunctionEnvironment -> CompilerExcept () -> TopDef -> CompilerExcept ()
-    fun fEnv monad topDef = do
-      topDefToInternal topDef fEnv
-      monad
+    -- fun :: FunctionEnvironment -> CompilerExcept () -> TopDef -> CompilerExcept ()
+    -- fun fEnv monad topDef = do
+    --   topDefToInternal topDef fEnv
+    --   monad
   in
     do
       fEnv <- getFunctionEnvironment program
+      sEnv <- getStructureEnvironment program
       assertMain fEnv
-      mapM (`topDefToInternal` fEnv) topDefs
+      mapM (\x -> topDefToInternal x fEnv sEnv) topDefs
 
 class Castable a b where
   cast_ :: a -> b
@@ -617,17 +663,17 @@ class TypedBiOperator a b where
 
 instance TypedBiOperator AddOp IType where
   assertOpType op@(Plus _) left right = do
-    (_,_,pos) <- asks teFunctionContext
+    (_,_,pos) <- asks TE.getContext
     unless ((left `same` right) && ((left `same` LInt)  || (left `same` LString))) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
   assertOpType op@(Minus _) left right = do
-    (_,_,pos) <- asks teFunctionContext
+    (_,_,pos) <- asks TE.getContext
     unless ((left `same` right) && (left `same` LInt)) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
 
 errorDivisonByZero :: MulOp -> Compiler a ()
 errorDivisonByZero op = do
-  (_, _, pos) <- asks teFunctionContext
+  (_, _, pos) <- asks TE.getContext
   throwError $ SemanticError pos (DivisionByZero (getPosition op))
 -- assertDivision :: MulOp -> IExpr -> Compiler FunTranslationEnvironment ()
 -- assertDivision op@(Div pos) (ILitInt 0) = errorDivisonByZero op
@@ -637,7 +683,7 @@ errorDivisonByZero op = do
 
 instance TypedBiOperator MulOp IType where
   assertOpType op left right = do
-    (a,b,pos) <- asks teFunctionContext
+    (a,b,pos) <- asks TE.getContext
     unless ((left `same` right) && (left `same` LInt)) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
 
@@ -650,7 +696,7 @@ instance TypedBiOperator RelOp IType where
   assertOpType op x y = let
     errorFun :: (Int, Int) -> IType -> IType -> Compiler a ()
     errorFun pos ltype rtype = do
-      (_, _, context) <- asks teFunctionContext
+      (_, _, context) <- asks TE.getContext
       throwError (SemanticError context $BinaryTypeConflict pos (ltype, rtype))
     tmp :: RelOp -> IType -> IType -> Compiler a ()
     tmp op@(EQU _) x y = do

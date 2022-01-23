@@ -7,7 +7,12 @@ data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LTy
                                                  name :: String} |
                          RedefinitionOfFunction {position :: (Int, Int), oldDefinition :: (Int, Int),
                                                  name :: String} |
+                         RedefinitionOfStructure {position :: (Int, Int), name :: String} |
+                         RedefinitionOfField {position :: (Int, Int), name :: String } |
+                         SuperclassNonexisting {name :: String , superclass :: String} |
+                         NotClass {pos :: (Int, Int), name :: String} |
                          NoReturnValue {returnType :: LType} |
+                         NullDereferenc {positiont (Int, Int)} |
                          UndefinedVar {position:: (Int, Int), name :: String} |
                          UndefinedFun {position:: (Int, Int), name :: String} |
                          WrongArgumentCount {position::(Int, Int)} |

@@ -31,6 +31,8 @@ module IDefinition (LType(..),
                     RelOp'(..),
                     Ident(..),
                     BNFC'Position(..),
+                    ClassDef(..),
+                    EnrichedClassDef'(..),
                     LValue'(..),
                     LValue,
                     convertType,
@@ -224,6 +226,12 @@ instance HasPosition Stmt where
     While p _ _ _ -> p
     SExp p _ -> p
 
+instance HasPosition ClassDef where
+  hasPosition = \case
+    ClassDef ma id cmds -> ma
+    ClassDefExtends ma id id' cmds -> ma
+
+
 class Indexed a where
   getId :: a -> Ident
   getIdStr :: a -> String
@@ -235,7 +243,16 @@ instance Indexed Arg where
 
 instance Indexed Lt.TopDef where
   getId (Lt.FnDef _ _ id _ _ ) = id
+  getId x = case x of 
+    Lt.FnDef _ _ id _ _ -> id
+    Lt.ClassDef _ id _ -> id
+    Lt.ClassDefExtends _ id _ _ -> id
 
+instance Indexed (EnrichedClassDef' a) where
+    getId = \case 
+      ClassDef a id cmds -> id
+      ClassDefExtends a id id' cmds -> id
+      
 instance Indexed TopDef where
   getId (FnDef _ _ id _ _ ) = id
 

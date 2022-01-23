@@ -117,9 +117,9 @@ bbBuildNamed bb name = let
         _ -> FCComplexBlock name [block] ()
       ([], blocks) -> FCComplexBlock name (reverse blocks) ()
       (instrs, blocks) -> FCComplexBlock name (reverse $
-                                               (FCNamedSBlock
+                                               FCNamedSBlock
                                                (subBlockName bb)
-                                                (reverse instrs) ()):blocks) ()
+                                                (reverse instrs) ():blocks) ()
 bbNew :: BlockBuilder
 bbNew = BB [] "" []
 
@@ -163,7 +163,7 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
             let sb' = flip bbBuildNamed bname $ bbaddBlock (flip bbBuildNamed finalSuccessEt $
                                  bbaddInstr (VoidReg, jump postEt) bbNew)
                       (bbaddBlock successBlock bbNew)
-                  
+
             return (sb', reg)
 
         (fb, (_, _)) <- withPrenamedOpenBlock failureEt Failure $ \bname -> do
@@ -296,7 +296,7 @@ translateExpr bname bb ie save =
               phirval=FCPhi Bool [((LitBool False), Et success), ((LitBool True), Et failure)]
               (ssa', newReg) = _nextRegister ssa
           modify $ fccPutSSAAloc ssa'
-          
+
           (bb', (_, reg)) <- translateExpr bname bbNew ie True
 
           let res = FCCondBlock "" (bbBuildAnonymous bb') reg (FCNamedSBlock success [(VoidReg, jump post)] ())

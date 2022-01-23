@@ -51,7 +51,9 @@ data IExpr = ILitInt Integer |
   IOr [IExpr] |
   IAdd IAddOp IExpr IExpr |
   IMul IMulOp IExpr IExpr |
-  IRel IRelOp IExpr IExpr
+  IRel IRelOp IExpr IExpr |
+  INull |
+  INew LType  -- Tu powinien być jakiś typ przechodni.
   deriving (Eq, Show)
 
 data IMulOp = ITimes | IDiv | IMod
@@ -65,6 +67,7 @@ type Reference = Int
 
 data IValue = IValueInt Integer | IValueBool Bool | IValueString String | Null | Undefined |
               RunTimeValue | OwningReference Reference
+  deriving Eq
 
 data IFun = IFun String LType [(String, LType)] IBlock
   deriving Show

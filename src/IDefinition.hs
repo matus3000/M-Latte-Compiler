@@ -114,7 +114,7 @@ data EnrichedStmt' a
 
 
 preprocessProgram :: Lt.Program -> Program
-preprocessProgram (Lt.Program a topdefs) = Program a topdefs' undefined
+preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
   where
     topdefs' = mapMaybe f topdefs
     classdefs = mapMaybe f' topdefs
@@ -194,6 +194,7 @@ convertType (Str _) = LString
 convertType (Bool _) = LBool
 convertType (Void _) = LVoid
 convertType (Fun _ x y) = LFun (convertType x) $ map convertType y
+convertType (Lt.Class _ (Ident id)) = LClass id
 
 getArgLType :: Arg -> LType
 getArgLType (Arg _ aType _) = convertType aType
@@ -276,3 +277,4 @@ instance Show LType where
   showsPrec x LBool = showString "Bool"
   showsPrec x LVoid = showString "Void"
   showsPrec x LString = showString "String"
+  showsPrec x (LClass string) = showString string

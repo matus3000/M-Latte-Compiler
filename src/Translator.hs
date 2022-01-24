@@ -144,14 +144,14 @@ _strconcat ie1 ie2 = IApp "_strconcat" [ie1, ie2]
 type Bindable = Either String (Reference, String)
 
 lvalueToBindable :: LValue -> Translator ((Int,Int),Bindable)
-lvalueToBindable = \case 
+lvalueToBindable = \case
   LVar ma (Ident id) -> return ((-1,-1) `fromMaybe` ma, Left id)
   LVarMem ma lv (Ident id) -> do
     (itype, ivalue, _)<- lvalueToInternal lv
     reference <-case ivalue of
       Null -> throwErrorInContext $ NullDereference (fromJust ma)
       Undefined -> throwErrorInContext $ UndefinedDerefence (fromJust ma)
-      RunTimeValue -> undefined 
+      RunTimeValue -> undefined
       OwningReference n -> return n
       _ -> throwErrorInContext $ ExpectedClass (fromJust ma) itype
     return (fromJust ma, (Right (reference, id)))
@@ -164,10 +164,29 @@ setLvaluesToRuntime lvalues = do
            case x of
              Left s -> do
                (itype, ivalue) <- getVariable pos s
-               setVariable pos pos s (itype, RunTimeValue)
+               newvalue <- case itype of
+                             LInt -> return RunTimeValue 
+                             LString -> return RunTimeValue 
+                             LBool -> return RunTimeValue 
+                             LVoid -> undefined
+                             LFun lt lts -> undefined
+                             LArray lt -> undefined
+                             LClass str -> OwningReference <$> newClass str RunTimeValue
+                             LGenericClass str lts -> undefined
+               setVariable pos pos s (itype, newvalue)
              Right (ref, member) -> do
                (itype, ivalue) <- getMember pos ref member
-               setMember pos ref member (itype, RunTimeValue )) x
+               newvalue <- case itype of
+                             LInt -> return RunTimeValue 
+                             LString -> return RunTimeValue 
+                             LBool -> return RunTimeValue 
+                             LVoid -> undefined
+                             LFun lt lts -> undefined
+                             LArray lt -> undefined
+                             LClass str -> OwningReference <$> newClass str RunTimeValue
+                             LGenericClass str lts -> undefined
+               setMember pos ref member (itype, newvalue)) x
+    
 -- setMemberUnsafe ::  Reference -> String -> IValue -> Translator ()
 -- setMemberUnsafe ref member ivalue = do
 --   z <- gets tsMemory
@@ -216,6 +235,7 @@ lvalueToInternal lvalue = let
             return (itype, ivalue, IMember ilvalue fieldName)
           Undefined -> throwErrorInContext $ UndefinedDerefence (fromJust ma)
           Null -> throwErrorInContext $ NullDereference (fromJust ma)
+          RunTimeValue  -> undefined
           _ -> undefined
       LVarArr ma lv ex -> undefined
 
@@ -574,18 +594,25 @@ stmtsToInternal ((VRet pos):rest) = do
   unless (funType `same` LVoid) $ throwErrorInContext
     (WrongReturnType ((-1,-1) `fromMaybe` pos) funType LVoid)
   return ([IVRet], True)
-stmtsToInternal ((Cond pos expr stmt md): rest) = do
-  (itype, ivalue, iexpr) <- exprToInternal expr
-  unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
-  case ivalue of
-    (IValueBool False) -> stmtsToInternal rest
-    (IValueBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt]):rest)
-    _ -> do
-      (iblock, returnBoolean) <- withinConditionalBlock $  blockToInternal $ VirtualBlock [stmt]
-      undefined "Należy zmienić struktury na runtime"
-      (irest, restBool) <- stmtsToInternal rest
-      let icond = ICondElse iexpr iblock (IBlock []) (MD md)
-      return (icond:irest, restBool)
+stmtsToInternal ((Cond pos expr stmt md): rest) =
+  let
+    stmt' :: Stmt
+    stmt' = Empty Nothing
+  in
+    stmtsToInternal (CondElse pos expr stmt stmt' md:rest)
+  -- Legacy
+  -- do
+  -- (itype, ivalue, iexpr) <- exprToInternal expr
+  -- unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
+  -- case ivalue of
+  --   (IValueBool False) -> stmtsToInternal rest
+  --   (IValueBool True) -> stmtsToInternal (BStmt pos (Block pos [stmt]):rest)
+  --   _ -> do
+  --     (iblock, returnBoolean) <- withinConditionalBlock $  blockToInternal $ VirtualBlock [stmt]
+  --     undefined "Należy zmienić struktury na runtime"
+  --     (irest, restBool) <- stmtsToInternal rest
+  --     let icond = ICondElse iexpr iblock (IBlock []) (MD md)
+  --     return (icond:irest, restBool)
 stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
   do
     (itype, ivalue, iexpr) <- exprToInternal expr

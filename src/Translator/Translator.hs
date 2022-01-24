@@ -6,6 +6,10 @@ module Translator.Translator(Translator,
                             declareVariable,
                             universalReference,
                             newTranslatorState,
+                            withOpenBlock,
+                            withinConditionalBlock,
+                            newClass,
+                            evalTranslator,
                             MemoryState(..),
                             VariableState) where
 
@@ -62,7 +66,7 @@ type ChangedReferences = DS.Set (Reference, String)
 
 data TranslatorState = TSRoot {memoryState::MemoryState, varState::VariableState} | TSCondition {memoryState::MemoryState, varState::VariableState, referenceTracker :: ChangedReferences}
 
-type Translator = ReaderT TranslationEnvironment (StateT TranslatorState (Except SemanticError))
+type Translator = ReaderT TranslationEnvironment (StateT TranslatorState CompilerExcept)
 
 newTranslatorState :: TranslatorState
 newTranslatorState = TSRoot (MemoryState DM.empty DM.empty DM.empty (Allocator 0 0)) VE.newVarEnv
@@ -89,7 +93,7 @@ modifyVarState f = do
         TSRoot ms ve -> TSRoot ms
         TSCondition ms ve set -> \x -> TSCondition ms x set
   put (constr newVarState)
-  
+
 modifyRefTracker :: (ChangedReferences -> ChangedReferences) -> Translator ()
 modifyRefTracker = undefined
 
@@ -111,7 +115,7 @@ newClass className defaultValue = do
 msModifyReferenceUnsafe :: Reference -> String -> IValue -> MemoryState -> MemoryState
 msModifyReferenceUnsafe ref member ivalue (MemoryState arr classes referenceTypes allocator) =
   let x = fromJust $ DM.lookup ref classes
-      x' = fromJust $ TCR.setField member ivalue x
+      x' = fromJust $ TCR.setFieldUnsafe member ivalue x
   in
     MemoryState arr (DM.insert ref x' classes) referenceTypes allocator
 
@@ -183,6 +187,22 @@ declareVariable pos id itv@(itype, ivalue)= do
     then throwErrorInContext $ RedefinitionOfVariable pos pos id
     else do
     modifyVarState (VE.declareVar id itv)
-  
+
+withOpenBlock :: Translator a -> Translator a
+withOpenBlock f = do
+  modifyVarState VE.openClosure
+  res <- f
+  modifyVarState VE.closeClosure
+  return res
+
+withinConditionalBlock :: Translator a -> Translator a
+withinConditionalBlock f = do
+  state <- get
+  res <- f
+  put state
+  return res
+
+evalTranslator :: TranslationEnvironment -> TranslatorState -> Translator a -> CompilerExcept a
+evalTranslator te ts = flip evalStateT ts . flip runReaderT te
 -- setVariables :: [((Int,Int), String, IValue)] -> Translator ()
 -- setVariables = undefined

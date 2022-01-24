@@ -12,6 +12,7 @@ data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LTy
                          RedefinitionOfField {position :: (Int, Int), name :: String } |
                          SuperclassNonexisting {name :: String , superclass :: String} |
                          NotClass {pos :: (Int, Int), name :: String} |
+                         ExpectedClass {pos :: (Int, Int), got :: LType } |
                          NoReturnValue {returnType :: LType} |
                          NullDereference {position :: (Int, Int)} |
                          UndefinedDerefence {positiont :: (Int, Int)} |

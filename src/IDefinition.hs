@@ -47,9 +47,9 @@ module IDefinition (LType(..),
                    ) where
 
 import Prelude
-import Data.Set (Set)
 import qualified Data.Set as DS
 import Data.Map (Map)
+import qualified Data.Map as DM
 import Latte.Abs
     ( Arg,
       Arg'(Arg),
@@ -72,6 +72,7 @@ import Latte.Abs
 import qualified Latte.Abs as Lt
 import Data.Maybe (fromMaybe, isJust, fromJust, catMaybes)
 import Data.Maybe (mapMaybe)
+import Data.Ord
 
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType | LClass String |
   LGenericClass String [LType]
@@ -80,8 +81,32 @@ data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType 
 -- data VarType = StaticInt Int | DynamicInt | StaticBool Bool | DynamicBool |
 --               StaticString String | DynamicString
 
-type ModifiedVariables = Set String
-type DeclaredVariables = Set String
+type UnifiedLValue = LValue
+type ModifiedLValues = [LValue]
+data ModifiedLvaluesBuilder = MLB {unified :: DS.Set UnifiedLValue, result :: [LValue]}
+type DeclaredLvalues = DS.Set UnifiedLValue
+
+lvalueToUnified :: LValue -> UnifiedLValue
+lvalueToUnified  = pruneLValue
+  where
+    pruneLValue :: LValue -> LValue
+    pruneLValue = \case
+      LVar ma id -> LVar Nothing id
+      LVarMem ma lv id -> LVarMem Nothing (pruneLValue lv) id
+      LVarArr ma lv ex -> undefined
+
+mlbInsert :: LValue -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
+mlbInsert lvalue = mlbInsertUnified (lvalueToUnified lvalue, lvalue)
+mlbInsertUnified :: (UnifiedLValue, LValue) -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
+mlbInsertUnified (unified, lvalue) original@(MLB un res) =
+  if unified `DS.member` un
+  then original
+  else MLB (DS.insert unified un) (lvalue:res)
+dlContains :: UnifiedLValue -> DeclaredLvalues -> Bool
+dlContains = DS.member
+dlInsert ::  UnifiedLValue -> DeclaredLvalues -> DeclaredLvalues
+dlInsert = DS.insert
+
 
 type Program = EnrichedProgram' BNFC'Position
 data EnrichedProgram' a = Program a [EnrichedTopDef' a] [EnrichedClassDef' a]
@@ -107,9 +132,9 @@ data EnrichedStmt' a
     | Decr a (LValue' a)
     | Ret a (Expr' a)
     | VRet a
-    | Cond a (Expr' a) (EnrichedStmt' a) ModifiedVariables
-    | CondElse a (Expr' a) (EnrichedStmt' a) (EnrichedStmt' a) ModifiedVariables
-    | While a (Expr' a) (EnrichedStmt' a) ModifiedVariables
+    | Cond a (Expr' a) (EnrichedStmt' a) ModifiedLValues
+    | CondElse a (Expr' a) (EnrichedStmt' a) (EnrichedStmt' a) ModifiedLValues
+    | While a (Expr' a) (EnrichedStmt' a) ModifiedLValues
     | SExp a (Expr' a)
 
 
@@ -121,7 +146,7 @@ preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
     f' :: Lt.TopDef -> Maybe ClassDef
     f' (Lt.ClassDef a id members) = Just $ ClassDef a id members
     f' (Lt.ClassDefExtends a id id2 members) = Just $ ClassDefExtends a id id2 members
-    f' _ = Nothing 
+    f' _ = Nothing
     f :: Lt.TopDef -> Maybe TopDef
     f (Lt.FnDef a _type id args block) = Just $ FnDef a _type id args (g block)
     f Lt.ClassDef{} = Nothing
@@ -129,62 +154,63 @@ preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
     g :: Lt.Block  -> Block
     g block@(Lt.Block a _) = block'
       where
-        (BStmt a block', _, _) = stmtToEnrichedStmt (Lt.BStmt a block) DS.empty DS.empty
+        (BStmt a block', _, _) = stmtToEnrichedStmt (Lt.BStmt a block) (MLB DS.empty []) DS.empty
 
-stmtToEnrichedStmt :: Lt.Stmt -> ModifiedVariables -> DeclaredVariables -> (Stmt, ModifiedVariables, DeclaredVariables)
+stmtToEnrichedStmt :: Lt.Stmt -> ModifiedLvaluesBuilder ->
+                      DeclaredLvalues -> (Stmt, ModifiedLvaluesBuilder, DeclaredLvalues)
 stmtToEnrichedStmt stmt md rd = case stmt of
   Lt.Empty a -> (Empty a, md, rd)
-  Lt.Ass a lvalue rest -> let mv = case lvalue of
-                                     LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md
-                                     LVarMem ma lv id -> md
-                                     LVarArr ma lv ex -> md
-                             in
-                               (Ass a lvalue rest, mv, rd)
-  Lt.Incr a lvalue -> let md' = case lvalue of
-                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md
-                                  LVarMem ma lv id -> md
-                                  LVarArr ma lv ex -> md
+  Lt.Ass a lvalue rest -> let md' =
+                                let
+                                  ulv = lvalueToUnified lvalue
                                   in
+                                  if dlContains ulv rd then md else mlbInsertUnified (ulv, lvalue) md
+                          in
+                            (Ass a lvalue rest, md', rd)
+  Lt.Incr a lvalue -> let md' = let
+                            ulv = lvalueToUnified lvalue
+                            in
+                              if dlContains ulv rd then md else mlbInsertUnified (ulv, lvalue) md
+                      in
                         (Incr a lvalue, md', rd)
-  Lt.Decr a lvalue -> let md' = case lvalue of
-                                  LVar _ (Ident var) -> if var `DS.member` md then md else DS.insert var md
-                                  LVarMem ma lv id -> md
-                                  LVarArr ma lv ex -> md
-                                  in
+  Lt.Decr a lvalue -> let md' =
+                            let ulv = lvalueToUnified lvalue
+                             in if dlContains ulv rd then md else mlbInsertUnified (ulv, lvalue) md
+                          in
                         (Decr a lvalue, md', rd)
   Lt.Decl a dtype items -> (Decl a dtype items, md, itemListToRedeclared items rd)
     where
-    itemListToRedeclared :: [Item' a] -> DS.Set String -> DS.Set String
+    itemListToRedeclared :: [Item' a] -> DeclaredLvalues -> DeclaredLvalues
     itemListToRedeclared list set = foldl f set list
       where
-        f :: DS.Set String -> Item' a -> DS.Set String
-        f set (NoInit _ (Ident x)) = DS.insert x set
-        f set (Init _ (Ident x) _) = DS.insert x set
+        f :: DeclaredLvalues -> Item' a -> DeclaredLvalues
+        f set (NoInit _ (Ident x)) = dlInsert (lvalueToUnified (LVar Nothing (Ident x))) set
+        f set (Init _ (Ident x) _) = dlInsert (lvalueToUnified (LVar Nothing (Ident x))) set
   Lt.SExp a expr -> (SExp a expr, md, rd)
   Lt.BStmt a block -> (BStmt a newBlock, modified, rd)
     where
       (Lt.Block b stmts) = block
-      f :: [Lt.Stmt]  -> ([EnrichedStmt' BNFC'Position], DS.Set String, DS.Set String)
+      f :: [Lt.Stmt]  -> ([EnrichedStmt' BNFC'Position], ModifiedLvaluesBuilder, DeclaredLvalues)
       f list = foldl
         (\(list, md, rd) stmt ->
            let
              (stmt', md', rd') = stmtToEnrichedStmt stmt md rd
            in
              (stmt':list, md', rd))
-        ([], DS.empty , rd)
+        ([], md , rd)
         list
       (stmts', modified, _) = f stmts
       newBlock = Block b (reverse stmts')
   Lt.VRet a -> (VRet a, md, rd)
   Lt.Ret a expr -> (Ret a expr, md, rd)
-  Lt.Cond a expr stmt -> (Cond a expr stmt' modified, modified, DS.empty)
+  Lt.Cond a expr stmt -> (Cond a expr stmt' (result modified), modified, rd)
     where
       (stmt', modified, _) = stmtToEnrichedStmt stmt md rd
-  Lt.CondElse a expr stmt1 stmt2 -> (CondElse a expr stmt1' stmt2' modified, modified, rd)
+  Lt.CondElse a expr stmt1 stmt2 -> (CondElse a expr stmt1' stmt2' (result modified), modified, rd)
     where
       (stmt1', modified1, _) = stmtToEnrichedStmt stmt1 md rd
       (stmt2', modified, _) = stmtToEnrichedStmt stmt2 modified1 rd
-  Lt.While a expr stmt -> (While a expr stmt' md', md', rd)
+  Lt.While a expr stmt -> (While a expr stmt' (result md'), md', rd)
     where
       (stmt', md', _) = stmtToEnrichedStmt stmt md rd
 
@@ -244,16 +270,16 @@ instance Indexed Arg where
 
 instance Indexed Lt.TopDef where
   getId (Lt.FnDef _ _ id _ _ ) = id
-  getId x = case x of 
+  getId x = case x of
     Lt.FnDef _ _ id _ _ -> id
     Lt.ClassDef _ id _ -> id
     Lt.ClassDefExtends _ id _ _ -> id
 
 instance Indexed (EnrichedClassDef' a) where
-    getId = \case 
+    getId = \case
       ClassDef a id cmds -> id
       ClassDefExtends a id id' cmds -> id
-      
+
 instance Indexed TopDef where
   getId (FnDef _ _ id _ _ ) = id
 

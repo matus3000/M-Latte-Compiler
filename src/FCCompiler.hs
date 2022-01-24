@@ -346,93 +346,93 @@ translateInstr name bb stmt = case stmt of
     (bb', (ft, r)) <- translateExpr' bb ie True
     return $ bbaddInstr (VoidReg, Return ft (Just r)) bb'
   Tr.IVRet -> return $ bbaddInstr (VoidReg, Return Void Nothing) bb
-  Tr.ICondElse ie ib ib' (Tr.MD md) ->
-    case ie of
-      Tr.INot ie' -> translateInstr name bb (Tr.ICondElse ie' ib' ib (Tr.MD md))
-      _ ->
-        withOpenBlock Cond $ \name -> do
-        labels <- generateLabels 3
-        let ascmd = DS.toAscList md
-            [postLabel, successLabel, failureLabel] = labels
-            successEt = Et successLabel
-            failureEt = Et failureLabel
+  -- Tr.ICondElse ie ib ib' (Tr.MD md) ->
+  --   case ie of
+  --     Tr.INot ie' -> translateInstr name bb (Tr.ICondElse ie' ib' ib (Tr.MD md))
+  --     _ ->
+  --       withOpenBlock Cond $ \name -> do
+  --       labels <- generateLabels 3
+  --       let ascmd = DS.toAscList md
+  --           [postLabel, successLabel, failureLabel] = labels
+  --           successEt = Et successLabel
+  --           failureEt = Et failureLabel
 
 
-        (cb, jr) <- withOpenBlock  Check $ (\name -> (do
-                                                         (bb, (_, reg)) <- translateExpr name bbNew ie True
-                                                         return (bbBuildAnonymous bb, reg)))
+  --       (cb, jr) <- withOpenBlock  Check $ (\name -> (do
+  --                                                        (bb, (_, reg)) <- translateExpr name bbNew ie True
+  --                                                        return (bbBuildAnonymous bb, reg)))
 
-        (sVals, sb) <- withPrenamedOpenBlock successLabel Success $ (\name ->
-                                                     withProtectedVars ascmd $ do
-                                                      sbb <- translateBlock name ib bbNew
-                                                      sVal <- mapM getVar ascmd
-                                                      let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
-                                                      return (sVal, bbBuildNamed sbb' name))
+  --       (sVals, sb) <- withPrenamedOpenBlock successLabel Success $ (\name ->
+  --                                                    withProtectedVars ascmd $ do
+  --                                                     sbb <- translateBlock name ib bbNew
+  --                                                     sVal <- mapM getVar ascmd
+  --                                                     let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
+  --                                                     return (sVal, bbBuildNamed sbb' name))
 
-        (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure $ (\name ->
-                                           withProtectedVars ascmd $ do
-                                           sbb <- translateBlock name ib' bbNew
-                                           fVals <- mapM getVar ascmd
-                                           let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
-                                           return (fVals, bbBuildNamed sbb' name))
+  --       (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure $ (\name ->
+  --                                          withProtectedVars ascmd $ do
+  --                                          sbb <- translateBlock name ib' bbNew
+  --                                          fVals <- mapM getVar ascmd
+  --                                          let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
+  --                                          return (fVals, bbBuildNamed sbb' name))
 
-        pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
-                                                 pbb <- phi (zip ascmd (zip sVals fVals)) successEt failureEt
-                                                 return (bbBuildNamed pbb name))
-        return $ bbaddBlock (FCCondBlock name cb jr sb fb pb ()) bb
-  Tr.IWhile ie ib (Tr.MD md) -> withOpenBlock While $ \wname -> do
-    labels <- generateLabels 4
-    let [postEtStr, checkEtStr, successEndStr, epilogueEndStr] = labels
-        ascmd = DS.toAscList md
+  --       pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
+  --                                                pbb <- phi (zip ascmd (zip sVals fVals)) successEt failureEt
+  --                                                return (bbBuildNamed pbb name))
+  --       return $ bbaddBlock (FCCondBlock name cb jr sb fb pb ()) bb
+  -- Tr.IWhile ie ib (Tr.MD md) -> withOpenBlock While $ \wname -> do
+  --   labels <- generateLabels 4
+  --   let [postEtStr, checkEtStr, successEndStr, epilogueEndStr] = labels
+  --       ascmd = DS.toAscList md
 
-    oldVals <- mapM getVar ascmd
-    reg_ft <- preallocRegisters (zip ascmd (map fst oldVals))
-    setVars ascmd (map fst reg_ft)
+  --   oldVals <- mapM getVar ascmd
+  --   reg_ft <- preallocRegisters (zip ascmd (map fst oldVals))
+  --   setVars ascmd (map fst reg_ft)
 
-    (sVals, sb) <- withOpenBlock Success $
-      \name ->
-        withProtectedVars ascmd $ do
-        sbb <- translateBlock name ib bbNew
-        sVal <- getVars ascmd
-        let sbb' = bbaddInstr (VoidReg, jump successEndStr) sbb
-            epilogue = bbBuildNamed (bbaddInstr (VoidReg, jump postEtStr) bbNew) successEndStr
-            sbb'' = bbaddBlock epilogue sbb'
+  --   (sVals, sb) <- withOpenBlock Success $
+  --     \name ->
+  --       withProtectedVars ascmd $ do
+  --       sbb <- translateBlock name ib bbNew
+  --       sVal <- getVars ascmd
+  --       let sbb' = bbaddInstr (VoidReg, jump successEndStr) sbb
+  --           epilogue = bbBuildNamed (bbaddInstr (VoidReg, jump postEtStr) bbNew) successEndStr
+  --           sbb'' = bbaddBlock epilogue sbb'
 
-        return (sVal, bbBuildNamed sbb'' name)
+  --       return (sVal, bbBuildNamed sbb'' name)
 
-    (cb, jr)<- withPrenamedOpenBlock checkEtStr Check $ \name -> do
-      (bb, (_, reg)) <- translateExpr name bbNew ie True
-      return (bbBuildNamed bb name, reg)
+  --   (cb, jr)<- withPrenamedOpenBlock checkEtStr Check $ \name -> do
+  --     (bb, (_, reg)) <- translateExpr name bbNew ie True
+  --     return (bbBuildNamed bb name, reg)
 
-    let successEt = Et $ bname sb
+  --   let successEt = Et $ bname sb
 
-    pb <- withPrenamedOpenBlock postEtStr Post $ \name -> do
-      regenv <- gets fccRegMap
-      let x = zip reg_ft (zip sVals oldVals)
-          (regenv', bb) = foldl (\(regenv, bb) ((r, t), ((_, sr), (_, fr))) ->
-                                   let phiValue = FCPhi t [(sr, Et successEndStr), (fr, Et wname)]
-                                   in
-                                     (_setOnlyRValue phiValue r regenv,
-                                     bbaddInstr (r, phiValue) bb))
-                          (regenv, bbNew) x
-      modify (fccPutRegMap regenv')
-      return (bbBuildNamed bb name)
+  --   pb <- withPrenamedOpenBlock postEtStr Post $ \name -> do
+  --     regenv <- gets fccRegMap
+  --     let x = zip reg_ft (zip sVals oldVals)
+  --         (regenv', bb) = foldl (\(regenv, bb) ((r, t), ((_, sr), (_, fr))) ->
+  --                                  let phiValue = FCPhi t [(sr, Et successEndStr), (fr, Et wname)]
+  --                                  in
+  --                                    (_setOnlyRValue phiValue r regenv,
+  --                                    bbaddInstr (r, phiValue) bb))
+  --                         (regenv, bbNew) x
+  --     modify (fccPutRegMap regenv')
+  --     return (bbBuildNamed bb name)
 
-    return $ bbaddBlock (FCNamedSBlock epilogueEndStr [] ()) (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr ()) bb)
-    where
-      preallocRegisters :: [(String, FCType)] -> FCCompiler [(FCRegister, FCType)]
-      preallocRegisters names = do
-        fcc <- get
-        let venv = fccVenv fcc
-            (ssaa', regmap', venv', list) = foldl
-              (\(ssaa, regmap, venv, list) (var, rtype) -> let
-                  (ssaa', r') = _nextRegister ssaa
-                  venv' = VE.setVar var r' venv
-                  regmap' = _setOnlyRegister r' (FCPhi rtype []) regmap
-                  in
-                  (ssaa', regmap', venv', (r', rtype):list)) (fccSSAAloc fcc, fccRegMap fcc, venv, []) names
-        modify (fccPutSSAAloc ssaa' . fccPutVenv venv . fccPutRegMap regmap')
-        return (reverse list)
+  --   return $ bbaddBlock (FCNamedSBlock epilogueEndStr [] ()) (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr ()) bb)
+  --   where
+  --     preallocRegisters :: [(String, FCType)] -> FCCompiler [(FCRegister, FCType)]
+  --     preallocRegisters names = do
+  --       fcc <- get
+  --       let venv = fccVenv fcc
+  --           (ssaa', regmap', venv', list) = foldl
+  --             (\(ssaa, regmap, venv, list) (var, rtype) -> let
+  --                 (ssaa', r') = _nextRegister ssaa
+  --                 venv' = VE.setVar var r' venv
+  --                 regmap' = _setOnlyRegister r' (FCPhi rtype []) regmap
+  --                 in
+  --                 (ssaa', regmap', venv', (r', rtype):list)) (fccSSAAloc fcc, fccRegMap fcc, venv, []) names
+  --       modify (fccPutSSAAloc ssaa' . fccPutVenv venv . fccPutRegMap regmap')
+  --       return (reverse list)
 
   Tr.ISExp ie -> fst <$> translateExpr' bb ie False
   Tr.IStmtEmpty -> return bb

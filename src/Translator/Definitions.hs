@@ -12,10 +12,10 @@ type CompilerExcept = Except SemanticError
 
 type IType = LType
 
-data MetaData = MD {modVars :: DS.Set String}
+data MetaData = MD {modVars :: [LValue]}
 
 instance Show MetaData where
-  show (MD md) = "(MD $ DS.fromList " ++ show (DS.toList md) ++ ")"
+  show (MD md) = "(MD $ DS.fromList " ++ show md ++ ")"
 
 data IStmt =  IBStmt IBlock |
   IDecl [IItem] |

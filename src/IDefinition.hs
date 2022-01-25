@@ -74,6 +74,7 @@ import Data.Maybe (mapMaybe)
 import Data.Ord
 import qualified Control.Arrow as Data.BiFunctor
 import qualified Data.Bifunctor
+import qualified Data.List as DL
 
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType | LClass String |
   LGenericClass String [LType]
@@ -154,7 +155,11 @@ preprocessProgram :: Lt.Program -> Program
 preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
   where
     topdefs' = mapMaybe f topdefs
-    classdefs = mapMaybe f' topdefs
+    classdefs = DL.sortOn classToString $ mapMaybe f' topdefs
+    classToString :: ClassDef -> String
+    classToString = \case 
+      ClassDef ma (Ident id) cmds -> "00_" ++ id
+      ClassDefExtends ma (Ident id) (Ident id') cmds -> "01_" ++ id' ++ "_" ++ "id"
     f' :: Lt.TopDef -> Maybe ClassDef
     f' (Lt.ClassDef a id members) = Just $ ClassDef a id members
     f' (Lt.ClassDefExtends a id id2 members) = Just $ ClassDefExtends a id id2 members

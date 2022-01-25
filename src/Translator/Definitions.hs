@@ -28,7 +28,8 @@ data IStmt =  IBStmt IBlock |
   ICondElse IExpr IBlock IBlock MetaData |
   IWhile IExpr IBlock MetaData |
   ISExp IExpr |
-  IStmtEmpty
+  IStmtEmpty |
+  ICast LType LType
   deriving Show
 
 newtype IBlock = IBlock [IStmt]

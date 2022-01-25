@@ -21,6 +21,7 @@ data SemanticErrorType = WrongReturnType {position:: (Int, Int), expected :: LTy
                          UndefinedClass {position:: (Int, Int), name :: String} |
                          UndefinedField {position:: (Int, Int), name :: String} |
                          WrongArgumentCount {position::(Int, Int)} |
+                         CircularInheritence |
                          NoMain |
                          PrimitiveType {position::(Int, Int), got :: LType} |
                          DivisionByZero {position:: (Int, Int)} |
@@ -89,7 +90,8 @@ errorToStringExtended err text_of_program =
           UndefinedField pos x -> msgExtended' pos ++ "Undefined field: " ++  x
           UndefinedClass pos x -> msgExtended' pos ++ "Undefined class: " ++ x
           WrongArgumentCount pos -> msgExtended' pos ++ "Wrong number of arguments to function call"
-          NoMain -> "No main function"
+          NoMain -> "No main function."
+          CircularInheritence -> "CircularInheritence."
           DivisionByZero pos -> msgExtended' pos ++ "Division by zero"
           TypeConflict pos l1 l2 -> msgExtended' pos ++ "TypeConflict - Expected: "
             ++ show l1 ++ ", got: " ++ show l2

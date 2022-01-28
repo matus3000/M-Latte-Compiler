@@ -41,8 +41,8 @@ getVars set fcrvalue = case fcrvalue of
       FCBinOp ft fbo fr fr' -> foldl' insertReg set [fr, fr']
       FCUnOp ft fuo fr -> insertReg set fr
       FCPhi ft x1 -> foldl' insertReg set (map fst x1)
-      BitCast ft fr ft' -> insertReg set fr
-      GetPointer ft fr fr' -> foldl' insertReg set  [fr, fr']
+      -- BitCast ft fr ft' -> insertReg set fr
+      -- GetPointer ft fr fr' -> foldl' insertReg set  [fr, fr']
       Return ft m_fr -> insertReg set (VoidReg `fromMaybe` m_fr)
       FCEmptyExpr -> set
       FCFunArg ft s n -> undefined
@@ -91,7 +91,7 @@ removeUselessBlocks env set block = case block of
         FCUnOp ft fuo fr -> False
         FCPhi ft x3 -> True
         BitCast ft fr ft' -> False
-        GetPointer ft fr fr' -> False
+        -- GetPointer ft fr fr' -> False
         Return ft m_fr -> error "Ret in Phi"
         FCEmptyExpr -> False
         FCFunArg ft str n -> False
@@ -253,7 +253,7 @@ removeDeadCode2 env set block = case block of
         FCUnOp ft fuo fr -> False
         FCPhi ft x3 -> True
         BitCast ft fr ft' -> False
-        GetPointer ft fr fr' -> False
+        -- GetPointer ft fr fr' -> False
         Return ft m_fr -> error "Ret in Phi"
         FCEmptyExpr -> False
         FCFunArg ft str n -> False

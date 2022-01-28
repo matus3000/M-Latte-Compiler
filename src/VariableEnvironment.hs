@@ -23,7 +23,7 @@ class (Ord key) => CVariableEnvironment a key value | a -> key value where
   protectVars_ :: (Foldable t) => t key -> a -> a
   protectVars :: [key] -> [value] -> a -> a
   endProtection :: a -> a
-  -- undeclareVar :: key -> a -> a
+  undeclareVar :: key -> a -> a
 
 newVarEnv :: (Ord vartype) => VarEnv vartype value
 newVarEnv = VarEnv DM.empty [] []
@@ -33,16 +33,18 @@ data VarEnv vartype value = VarEnv {varmap :: DM.Map vartype [value],
                                          redeclaredVars :: [DS.Set vartype]
                                        }
 instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
-  -- undeclareVar key (VarEnv vmap modvars redvars) =
-  --   let x = [] `fromMaybe` DM.lookup key vmap
-  --       xtail = if null x then error "UndeclareVar: Variable is not declared"
-  --         else tail x
-  --   in
-  --     if (null modvars  || null redvars) then error "Open closure! Default value is closed"
-  --     else VarEnv (DM.insert key xtail vmap) ((DS.delete key $ head modvars):(tail modvars)) ((DS.delete key $ head redvars):(tail redvars))
+  undeclareVar key (VarEnv vmap modvars redvars) =
+    let x = [] `fromMaybe` DM.lookup key vmap
+        xtail = if null x then error "UndeclareVar: Variable is not declared"
+          else tail x
+    in
+      if null modvars  || null redvars then error "Open closure! Default value is closed"
+      else VarEnv (DM.insert key xtail vmap)
+           (DS.delete key (head modvars):tail modvars)
+           (DS.delete key (head redvars):tail redvars)
   setVar key value (VarEnv vmap modvars redvars) =
     let x = [] `fromMaybe` DM.lookup key vmap
-        hmod = if (null modvars) then error "XX" else (head modvars)
+        hmod = if (null modvars) then error "XX" else head modvars
     in
       VarEnv (DM.insert key (value:tail x) vmap) (DS.insert key hmod : tail modvars) redvars
   declareVar key value venv@(VarEnv vmap [] _) = error "VE.DeclareVar: modifiedVars are empty List"
@@ -64,6 +66,7 @@ instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
     Nothing -> Nothing
     Just (x:xs) -> Just x
     Just [] -> Nothing
+
   openClosure (VarEnv vmap modvars redvars) = VarEnv vmap (DS.empty : modvars) (DS.empty : redvars)
   closeClosure (VarEnv vmap modvars redvars) =
     let
@@ -81,7 +84,6 @@ instance (Ord key) => CVariableEnvironment (VarEnv key value) key value where
           _ -> VarEnv (foldl (flip popKey) vmap (head redvars))
             (DS.union (head modvars) (head $ tail modvars): tail (tail modvars))
             (tail redvars)
-
   protectVars keys  vals  venv = foldl
     (\venv (key, val) -> if containsVar key venv then declareVar key val venv else venv)
     (openClosure venv)

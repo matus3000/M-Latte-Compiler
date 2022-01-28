@@ -21,7 +21,9 @@ module Translator(
     Reference,
     stmtsToInternal,
     functionMetaDataNew,
-    FunctionMetadata(..)
+    FunctionMetadata(..),
+    IProgram(..),
+    IClass(..),
   ) where
 
 import IDefinition hiding (Array)
@@ -143,6 +145,15 @@ _strconcat ie1 ie2 = IApp "_strconcat" [ie1, ie2]
 
 type Bindable = Either String (Reference, String)
 
+simpleLvalueToInernal :: LValue' a -> ILValue
+simpleLvalueToInernal = \case
+  LVar ma (Ident id) -> IVar id
+  LVarMem ma lv (Ident id) -> let
+    ilv = simpleLvalueToInernal lv
+    in
+    IMember ilv id
+  LVarArr ma lv ex -> undefined
+  
 lvalueToBindable :: LValue -> Translator ((Int,Int),Bindable)
 lvalueToBindable = \case
   LVar ma (Ident id) -> return ((-1,-1) `fromMaybe` ma, Left id)
@@ -624,7 +635,7 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
         (iblock1, returnBoolean1) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt1])
         (iblock2, returnBoolean2) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt2])
         setLvaluesToRuntime md
-        let icond = ICondElse iexpr iblock1 iblock2 (MD md)
+        let icond = ICondElse iexpr iblock1 iblock2 (MD $ map simpleLvalueToInernal md)
         if returnBoolean1 && returnBoolean2
           then return ([icond], True)
           else BiFunctor.first (icond:) <$> stmtsToInternal rest
@@ -701,6 +712,14 @@ topDefToInternal fDef fEnv sEnv = let
       unless (snd x || retType == LVoid) (throwError $ SemanticError (getPosition fDef) (NoReturnValue retType))
       return $ IFun funName retType funArgs (fst x)
 
+classDefToInternal :: ClassDef -> FunctionEnvironment -> StructureEnvironment -> CompilerExcept IClass
+classDefToInternal cdef fEnv sEnv = let
+  className = case cdef of
+    ClassDef ma (Ident id) cmds -> id
+    ClassDefExtends ma (Ident id) id' cmds -> id
+  in do
+  return $ IClass className []
+
 assertMain :: FunctionEnvironment -> CompilerExcept ()
 assertMain fEnv =
   let
@@ -710,7 +729,12 @@ assertMain fEnv =
       Just (LInt, _) -> return ()
       _ -> throwError $ SemanticError (0,0) NoMain
 
-programToInternal :: Program -> CompilerExcept [IFun]
+data IProgram = IProgram [IFun] [IClass] StructureEnvironment 
+
+data IClass = IClass {icName :: String,
+                     icDefinedMethods :: [()]}
+              
+programToInternal :: Program -> CompilerExcept IProgram
 programToInternal program@(Program _ topDefs classDefs) =
   let
     x :: CompilerExcept ()
@@ -724,7 +748,9 @@ programToInternal program@(Program _ topDefs classDefs) =
       fEnv <- getFunctionEnvironment program
       sEnv <- getStructureEnvironment program
       assertMain fEnv
-      mapM (\x -> topDefToInternal x fEnv sEnv) topDefs
+      ifuns <- mapM (\x -> topDefToInternal x fEnv sEnv) topDefs
+      iclasses <- mapM (\x -> classDefToInternal x fEnv sEnv) classDefs
+      return $ IProgram ifuns iclasses sEnv
 
 class Castable a b where
   cast_ :: a -> b
@@ -760,11 +786,6 @@ instance TypedBiOperator MulOp IType where
     (a,b,pos) <- asks TE.getContext
     unless ((left `same` right) && (left `same` LInt)) $
       throwError (SemanticError pos $ BinaryTypeConflict (getPosition op) (left, right))
-
--- instance TypedBiOperator MulOp IType where
---   assertOpType op@(Div pos) _ (StaticInt 0) = errorDivisonByZero op
---   assertOpType op@(Mod pos) _ (StaticInt 0) = errorDivisonByZero op
---   assertOpType op left right = assertOpType op (cast left) (cast right)
 
 instance TypedBiOperator RelOp IType where
   assertOpType op x y = let
@@ -864,6 +885,8 @@ containsPossiblyEndlessLoop (IFun _ _ _ iblock) =
       ISExp ie -> False
       IStmtEmpty -> False
 
+_getNamesOfStateChangingFunctions :: DS.Set String -> [IFun] -> DS.Set String
+_getNamesOfStateChangingFunctions seed ifuns = undefined
 functionMetaDataNew :: [IFun] -> FunctionMetadata
 functionMetaDataNew ifuns =
   let x = map (const DS.empty) ifuns

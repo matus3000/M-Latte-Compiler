@@ -12,7 +12,7 @@ type CompilerExcept = Except SemanticError
 
 type IType = LType
 
-data MetaData = MD {modVars :: [LValue]}
+data MetaData = MD {modVars :: [ILValue]}
 
 instance Show MetaData where
   show (MD md) = "(MD $ DS.fromList " ++ show md ++ ")"
@@ -28,8 +28,7 @@ data IStmt =  IBStmt IBlock |
   ICondElse IExpr IBlock IBlock MetaData |
   IWhile IExpr IBlock MetaData |
   ISExp IExpr |
-  IStmtEmpty |
-  ICast LType LType
+  IStmtEmpty 
   deriving Show
 
 newtype IBlock = IBlock [IStmt]
@@ -54,7 +53,8 @@ data IExpr = ILitInt Integer |
   IMul IMulOp IExpr IExpr |
   IRel IRelOp IExpr IExpr |
   INull |
-  INew LType  -- Tu powinien być jakiś typ przechodni.
+  INew LType |
+  ICast LType IExpr -- Tu powinien być jakiś typ przechodni.
   deriving (Eq, Show)
 
 data IMulOp = ITimes | IDiv | IMod

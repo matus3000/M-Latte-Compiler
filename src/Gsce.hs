@@ -55,8 +55,8 @@ isRValueDynamic env fcr = case fcr of
   FCBinOp ft fbo fr fr' -> any isRegisterDynamic' [fr, fr']
   FCUnOp ft fuo fr -> isRegisterDynamic' fr
   FCPhi ft x0 -> True
-  BitCast ft fr ft' -> isRegisterDynamic' fr
-  GetPointer ft fr fr' -> any isRegisterDynamic' [fr, fr']
+  BitCast ft ft' fr -> isRegisterDynamic' fr
+  -- GetPointer ft fr fr' -> any isRegisterDynamic' [fr, fr']
   Return ft m_fr ->True
   FCEmptyExpr -> True
   FCFunArg ft s n ->True
@@ -102,8 +102,8 @@ substituteRegisters substitution fcrvalue = case fcrvalue of
   FCBinOp ft fbo fr fr' -> FCBinOp ft fbo (subst fr) (subst fr')
   FCUnOp ft fuo fr -> FCUnOp ft fuo (subst fr)
   FCPhi ft x0 -> FCPhi ft (map (BiFunctor.first subst) x0)
-  BitCast ft fr ft' -> BitCast ft (subst fr) ft'
-  GetPointer ft fr fr' -> GetPointer ft (subst fr) (subst fr')
+  -- BitCast ft fr ft' -> BitCast ft (subst fr) ft'
+  -- GetPointer ft fr fr' -> GetPointer ft (subst fr) (subst fr')
   Return ft m_fr -> Return ft (subst <$> m_fr)
   FCEmptyExpr -> FCEmptyExpr
   FCFunArg ft s n -> fcrvalue

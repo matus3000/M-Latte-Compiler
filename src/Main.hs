@@ -46,7 +46,7 @@ compile program =
     iprogram <- (programToInternal . IDef.preprocessProgram) program
     return $ LLVM.compile (compileProg  iprogram)
 
-translate :: Lt.Program  -> CompilerExcept [IFun]
+translate :: Lt.Program  -> CompilerExcept IProgram
 translate program =
   do
     (programToInternal . IDef.preprocessProgram) program
@@ -77,7 +77,7 @@ runCompiler p s =
           do
             let code = LLVM.compile $ compileProg tcode
             putStrLnStderr "OK"
-            when test (putStrLnStderr (show tcode))
+            -- when test (putStrLnStderr (show tcode))
             putStr code
             exitSuccess
   where

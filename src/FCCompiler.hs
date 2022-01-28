@@ -519,6 +519,20 @@ translateIFuns list = do
           translateFun ifun
     ) list
 
+
+translateIClass :: Tr.IClass -> FCCompiler FCClass
+translateIClass = \case
+  Tr.IClass s x0 -> do
+    sd <- asks (fromJust . Fce.getClassData s)
+    return $ FCClass {
+      className = s,
+      parentName = Fce.superclass sd,
+      inheritedFields  = map (BiFunctor.second convert) (Fce.inheritedFields sd),
+      definedFields = map (BiFunctor.second convert) (Fce.definedFields sd)}
+
+translateIClasses :: [Tr.IClass] -> FCCompiler [FCClass]
+translateIClasses = mapM translateIClass 
+
 compileProg :: Tr.IProgram  -> FCProg
 compileProg (Tr.IProgram ifuns iclass classEnv) = let
   funMetadata = Tr.functionMetaDataNew ifuns
@@ -530,11 +544,16 @@ compileProg (Tr.IProgram ifuns iclass classEnv) = let
   _ftypeMap :: DM.Map String FCType
   _ftypeMap = foldl' (\map (Tr.IFun fname ltype _ _) -> DM.insert fname (convert ltype) map) _ftypeMapInit ifuns
   funEnv = Fce.new _ftypeMap (Tr.dynamicFunctions funMetadata) classEnv
-  (funBodies, a) = runState (runReaderT (translateIFuns ifuns) funEnv) initialFcc
+  ((funBodies, classes), a) = runState (runReaderT (do
+                                            ifuns <- translateIFuns ifuns
+                                            iclasses <- translateIClasses iclass
+                                            return (ifuns, iclasses))
+                              funEnv)
+                   initialFcc
   constants :: [(FCRegister, String)]
   constants = DM.foldrWithKey (\ string i -> ((ConstString i, string):)) [] (Fcs.constMap $ fcsConstants a)
   in
-    FCProg _usedExternals constants funBodies
+    FCProg _usedExternals constants funBodies classes
   where
     initialFcc = Fcs.new
 
@@ -552,11 +571,8 @@ unloadPointer ptr = \case
 
 mockLoad :: FCRegister -> FCType -> FCType -> FCRegister -> FCCompiler ()
 mockLoad reg ftype ftypeptr ptr = do
-  (fcstate, _) <- gets $ Fcs.addFCRValue (FCLoad ftype ftypeptr ptr) Fcs.RValueToReg 
+  (fcstate, _) <- gets $ Fcs.addFCRValue (FCLoad ftype ftypeptr ptr) Fcs.RValueToReg
   put fcstate
-
-hasMutableArgs :: String -> FCCompiler Bool
-hasMutableArgs = undefined
 
 emplaceFCRValue :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue rvalue bb = do

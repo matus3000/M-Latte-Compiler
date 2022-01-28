@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 module Translator.TranslatorEnvironment(FunctionData,
                                         FunctionEnvironment,
-                                        StructureEnvironment,
+                                        StructureEnvironment(..),
                                         StructureData(..),
                                         getStructureEnvironment,
                                         getFunctionEnvironment,
@@ -34,10 +34,19 @@ import Class (Class(className))
 type FunctionData = (LType, [LType])
 data StructureData = StructureData {fields :: [(String, LType)],
                                     superclass :: Maybe String,
+                                    definedFields :: [(String, LType)],
+                                    inheritedFields :: [(String, LType)],
                                     methods :: DM.Map String FunctionData,
                                     methodsParents :: DM.Map String String}
+
+
 type FunctionEnvironment = DM.Map String FunctionData
-type StructureEnvironment = DM.Map String StructureData
+type StructureDataMap = DM.Map String StructureData
+
+data StructureEnvironment = StructureEnvironment {
+  classMap :: StructureDataMap,
+  inheritanceInfo :: InheritenceHierarchy
+  }
 type FunctionContext = (LType, String, (Int, Int))
 
 type TranslationEnvironment = (FunctionEnvironment, StructureEnvironment, FunctionContext)
@@ -50,7 +59,7 @@ getClassEnv :: TranslationEnvironment -> StructureEnvironment
 getClassEnv (x, y, z) = y
 
 lookupClass :: String -> TranslationEnvironment -> Maybe StructureData
-lookupClass className te = DM.lookup className $ getClassEnv te
+lookupClass className te = DM.lookup className $ (classMap . getClassEnv) te
 
 type StateStrMap x = State (DM.Map String x)
 
@@ -64,7 +73,7 @@ sdFieldType fieldName sd = snd <$> DL.find ((fieldName==).fst) (fields sd)
 hasField :: String -> String -> TranslationEnvironment -> Bool
 hasField  structure field tEnv = isJust $ fieldType structure field tEnv
 fieldType :: String -> String -> TranslationEnvironment -> Maybe LType
-fieldType structure fieldName tEnv = DM.lookup structure (getClassEnv tEnv) >>=  DL.lookup fieldName . fields
+fieldType structure fieldName tEnv = DM.lookup structure (classMap $ getClassEnv tEnv) >>=  DL.lookup fieldName . fields
 
 -- type TemporalStructureEnvironment = DS.Set String
 -- getStructureEnvironment :: Program -> CompilerExcept StructureEnvironment
@@ -219,11 +228,11 @@ classParsingPhase2 set defs = runReaderT (classParsingPhase2' defs) set
                                                                      (CircularInheritence)))
             return $ ihAddClassInheritence className parentName ih
 
-classParsingPhase3 :: InheritenceHierarchy -> [ClassDef] -> CompilerExcept StructureEnvironment
+classParsingPhase3 :: InheritenceHierarchy -> [ClassDef] -> CompilerExcept StructureDataMap
 classParsingPhase3 ih defs = runReaderT (foldM f (DM.empty) defs) ih
   where
-    f :: StructureEnvironment -> ClassDef ->
-         (ReaderT InheritenceHierarchy CompilerExcept) StructureEnvironment
+    f :: StructureDataMap -> ClassDef ->
+         (ReaderT InheritenceHierarchy CompilerExcept) StructureDataMap
     f se classdef = do
       initFields <- case classdef of
                       ClassDef ma id cmds -> return []
@@ -231,8 +240,8 @@ classParsingPhase3 ih defs = runReaderT (foldM f (DM.empty) defs) ih
       let (className, parent, cmds) =case classdef of
             ClassDef ma (Ident id) cmds -> (id, Nothing, cmds)
             ClassDefExtends ma (Ident id) (Ident parentName) cmds -> (id, Just parentName, cmds)
-      fields <- foldlM buildField initFields cmds
-      return (DM.insert className (StructureData fields parent DM.empty DM.empty) se)
+      (inherited, defined, fields) <- foldlM buildField (initFields, [], []) cmds
+      return (DM.insert className (StructureData fields parent defined inherited DM.empty DM.empty) se)
     _convertType :: Type -> (ReaderT InheritenceHierarchy CompilerExcept) LType
     _convertType ptype = do
       let converted = convertType ptype
@@ -245,25 +254,28 @@ classParsingPhase3 ih defs = runReaderT (foldM f (DM.empty) defs) ih
           unless (issubclass || isbaseclass) (throwError (SemanticError pos $ UndefinedClass pos s))
         _ -> return ()
       return converted
-    buildField :: [(String, LType)] -> ClassMemberDef ->
-      (ReaderT InheritenceHierarchy CompilerExcept) [(String, LType)]
+    buildField :: ([(String, LType)], [(String, LType)], [(String, LType)]) -> ClassMemberDef
+      -> (ReaderT InheritenceHierarchy CompilerExcept)
+      ([(String, LType)], [(String, LType)], [(String, LType)])
     buildField result = \case
       FieldDecl ma ty fdis -> do
         ltype <- _convertType ty
         foldM (f ltype) result fdis
       where
-        f :: LType -> [(String, LType)] -> FieldDeclItem ->
-          (ReaderT InheritenceHierarchy CompilerExcept) [(String, LType)]
-        f ltype res = \case
+        f :: LType -> ([(String, LType)], [(String, LType)], [(String, LType)])
+          -> FieldDeclItem
+          -> (ReaderT InheritenceHierarchy CompilerExcept)
+          ([(String, LType)], [(String, LType)], [(String, LType)])
+        f ltype res@(inh, def, sum) = \case
           FieldDeclItem ma (Ident id) -> do
-            if isJust $ DL.lookup id res
+            if isJust $ DL.lookup id sum
               then throwError $
                      SemanticError (fromJust ma) (RedefinitionOfField (fromJust ma) id)
-              else return ((id, ltype):res)
+              else return (inh, (id, ltype):def, (id, ltype):sum)
 
 getStructureEnvironment :: Program -> CompilerExcept StructureEnvironment
 getStructureEnvironment (Program _ _ structDefs) = do
   x <- classParsingPhase1 structDefs
   y <- classParsingPhase2 x structDefs
   z <- classParsingPhase3 y structDefs
-  return z
+  return (StructureEnvironment z y)

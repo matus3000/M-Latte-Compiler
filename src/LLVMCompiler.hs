@@ -152,7 +152,6 @@ instance Outputable FCRValue where
   output (FCCondJump c1 s f) = "br i1 " ++ output c1 ++ ", label "
     ++ output s ++ ", label " ++ output f
   output (FunCall rtype fname args) = "call " ++ outputFun fname rtype args
-  output (GetPointer{}) = "Obecnie nie zdefiniowana"
   output _ = error "Instancja Output dla FCRValue niezdefiniowana"
 
 instance Outputable LLVMInstr where
@@ -181,19 +180,17 @@ instance Outputable LLVMFunDecl where
       outputArgs = foldr (\(ftype, freg) s ->
                         output ftype ++ " " ++ output freg ++ (if null s then "" else ", ") ++ s) ""
 
-
-
 instance Outputable LLVMModule where
-  output (LLVMModule exts consts list) =
+  output (LLVMModule exts consts funs) =
     concatMap (\(reg,str)-> outputConstant reg str ++ "\n") consts
     ++ (if null consts then "" else "\n") ++
     concatMap (\(name, (rtype, args))-> outputExternalFunction name rtype args ++ "\n") exts
     ++ (if null consts then "" else "\n") ++
-    concatMap (\x -> output x ++ "\n\n") list
+    concatMap (\x -> output x ++ "\n\n") funs
     where
     outputExternalFunction :: String -> FCType -> [FCType] -> String
-    outputExternalFunction name rtype list =
-      "declare " ++ output rtype ++ " @" ++ name ++ "(" ++ f list ++ ")"
+    outputExternalFunction name rtype funs =
+      "declare " ++ output rtype ++ " @" ++ name ++ "(" ++ f funs ++ ")"
         where
         f :: [FCType] -> String
         f = foldr (\ftype s ->
@@ -215,86 +212,9 @@ instance Outputable LLVMModule where
     outputConstant _ _ = undefined
 
 compile :: FCProg -> String
-compile (FCProg exts consts list) =
-  output (LLVMModule exts consts (map f list))
+compile (FCProg exts consts funs classes) =
+  output (LLVMModule exts consts (map f funs))
   where
     f :: FCFun -> LLVMFunDecl
     f (FCFun' fname ftype args iblock) = LLVMFunDecl fname ftype args
       (llvmBuildBuilder ftype $ toLLVMBuilder [] iblock)
-
--- --     -- PRINT MONAD
-
--- type StringBuilder = State [String]
--- type IndentMonad = ReaderT AltIndentation StringBuilder ()
--- type AltIndentation = (String, String)
-
--- pmPutLine :: String -> IndentMonad
--- pmPutLine s = do
---   (_, cind) <- ask
---   hist <- get
---   put $ "\n":s:cind:hist
--- pmPutString :: String -> IndentMonad
--- pmPutString s = do
---   (_, cind) <- ask
---   hist <- get
---   put $ s:cind:hist
--- pmNewLine :: IndentMonad
--- pmNewLine = modify ("\n":)
--- withIndent :: IndentMonad -> IndentMonad
--- withIndent f = (\(indent, oldIndent) -> (indent, indent ++ oldIndent)) `local` f
-
--- buildIndentMonad :: String -> Int -> Int -> IndentMonad -> String
--- buildIndentMonad indentType len init monad =
---   let
---     indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
---     indent = indentFun len indentType
---     initIndent = indentFun init indent
---     list = execState (runReaderT monad (indent, initIndent)) []
---   in
---     concat (reverse list)
-
--- printIndentMonad :: String -> Int -> Int -> IndentMonad -> IO ()
--- printIndentMonad indentType len init monad =
---   let
---     indentFun n s = foldl (\rest _ -> s ++ rest) "" [1..n]
---     indent = indentFun len indentType
---     initIndent = indentFun init indent
---     list = execState (runReaderT monad (indent, initIndent)) []
---   in
---     mapM_ putStr (reverse list)
-
-
--- outputFCFun :: LLVMFunDecl -> IndentMonad
--- outputFCFun (LLVMFunDecl name rt args body) = do
---   pmPutLine $ "define " ++ show rt ++ " @" ++ name ++ "(" ++ showArgs args ++ ") {"
---   withIndent $ mapM_ (\x -> do
---                          pmPutLine $ output x
---                      ) body
---   pmPutLine "}"
---   where
---     showArgs :: [(FCType, FCRegister)] -> String
---     showArgs = foldr (\(ftype, freg) s ->
---                         show ftype ++ " " ++ show freg ++ (if null s then "" else ", ") ++ s) ""
-
--- outputLLVMModuleWithIndent :: LLVMModule -> IndentMonad
--- outputLLVMModuleWithIndent (LLVMModule exts consts list) = do
---   mapM_ (\(reg,str)-> pmPutLine $ outputConstant reg str) consts
---   unless (null consts) pmNewLine
---   mapM_ (\(name, (rtype, args))-> printExternalFunction name rtype args) exts
---   unless (null list) pmNewLine
---   mapM_ (\fun -> outputFCFun fun >> pmNewLine) list
---   pmNewLine
---   where
---     printExternalFunction :: String -> FCType -> [FCType] -> IndentMonad
---     printExternalFunction name rtype list = do
---       pmPutLine $ "declare " ++ output rtype ++ " @" ++ name ++ "(" ++ f list ++ ")"
---         where
---         f :: [FCType] -> String
---         f = foldr (\ftype s ->
---                         output ftype ++ (if null s then "" else ", ") ++ s) ""
---     outputConstant :: FCRegister -> String -> String 
---     outputConstant freg@(ConstString x) str = output freg ++ " = internal constant "
---       ++ "[" ++ show (1 + length str) ++ "x i8" ++ "] c" ++ "\"" ++ str' ++ "\""
---       where
---         str' = str ++ "\\00"
---     outputConstant _ _ = undefined

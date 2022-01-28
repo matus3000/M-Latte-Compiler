@@ -6,6 +6,7 @@
 module FCCompilerTypes (
   FCUnaryOperator(..),
   FCBinaryOperator(..),
+  FCClass(..),
   FCRegister(..),
   FCRValue(..),
   FCInstr(..),
@@ -139,7 +140,14 @@ data FCFun' a b = FCFun'
   }
 type FCFun = FCFun' FCInstr ()
 
-data FCProg = FCProg [(String, (FCType, [FCType]))] [(FCRegister, String)] [FCFun]
+data FCClass = FCClass
+  { className :: String,
+    parentName :: Maybe String,
+    inheritedFields :: [(String, FCType)],
+    definedFields :: [(String, FCType)]
+  }
+
+data FCProg = FCProg [(String, (FCType, [FCType]))] [(FCRegister, String)] [FCFun] [FCClass]
 
 data RegType = RNormal | RDynamic | RPhi | RVoid
 
@@ -154,7 +162,7 @@ instance Convertable IDef.LType FCType where
     IDef.LFun{}           -> undefined
     IDef.LArray{}         -> undefined
     IDef.LClass name      -> FCPointer (Class name)
-    IDef.LGenericClass {} -> undefined 
+    IDef.LGenericClass {} -> undefined
 instance Convertable Tr.IRelOp FCBinaryOperator where
   convert x = case x of
     Tr.ILTH -> Lth
@@ -176,7 +184,7 @@ instance Convertable Tr.IMulOp FCBinaryOperator where
     Tr.IMod -> Mod
 
 
-jump :: String -> (FCRValue)
+jump :: String -> FCRValue
 jump = FCJump . Et
 conditionalJump :: FCRegister -> FCRegister -> FCRegister -> FCRValue
 conditionalJump = FCCondJump
@@ -190,7 +198,7 @@ derefencePointerType = \case
   Class s -> undefined
   FCPointer ft -> ft
   UniversalPointer -> undefined
-  
+
 fCRValueType :: FCRValue -> FCType
 fCRValueType x = case x of
   FunCall ft s frs -> ft
@@ -208,4 +216,4 @@ fCRValueType x = case x of
   GetField ft s ft' fr -> ft
   FCLoad ft ft' fr -> ft
   FCStore ft fr ft' fr' -> Void
-  
+

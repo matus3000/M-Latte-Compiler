@@ -6,7 +6,7 @@ module Gsce (gcseOptimize) where
 
 import Prelude
 
-import Data.Maybe (fromMaybe, maybeToList)
+import Data.Maybe (fromMaybe, maybeToList, fromJust)
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
 import qualified Data.List as DL
@@ -28,12 +28,14 @@ import qualified Control.Arrow as BiFunctor
 import qualified VariableEnvironment as Ve
 import Control.Monad.Reader (ReaderT (runReaderT), asks, ask)
 import Data.List (nub)
-
+import FCCompiler.FCEnvironment (FCEnvironment)
+import qualified FCCompiler.FCEnvironment as Fce
+import qualified DeadCodeRemoval as Fce
 
 data InternalVal = IVFCR FCRValue
   deriving (Eq, Ord)
 
-type FCInternal1 = FCBlock' (FCInstr) ((DS.Set InternalVal))
+type FCInternal1 = FCBlock' FCInstr (DS.Set InternalVal)
 type RegDefMap = DM.Map FCRegister FCRValue
 type ValRegMap = DM.Map InternalVal [FCRegister]
 type Substitution = DM.Map FCRegister FCRegister
@@ -43,30 +45,39 @@ type ValuesInsideBlock = DS.Set InternalVal
 type ValuesBeforeBlock = DS.Set InternalVal
 type CommonValues = (ValuesInsideBlock, ValuesBeforeBlock)
 
-type Environment = (DS.Set String, DS.Set FCRegister)
+type Environment = (FCEnvironment, DS.Set FCRegister)
 isFunDynamic ::  Environment -> String-> Bool
-isFunDynamic env fun = DS.member fun (fst env)
+isFunDynamic env fun = let
+  x = fromJust $ Fce.isIoFunction fun (fst env)
+  y = case fromJust $ Fce.functionType fun (fst env) of
+    FCPointer ft -> True
+    UniversalPointer -> True
+    _ -> False
+  in
+  x || y
 isRegisterDynamic :: Environment -> FCRegister ->  Bool
 isRegisterDynamic env = flip DS.member (snd env)
 
 isRValueDynamic :: Environment -> FCRValue -> Bool
 isRValueDynamic env fcr = case fcr of
-  FunCall ft s x0 ->  (isFunDynamic' s || any (isRegisterDynamic' . snd) x0)
+  FunCall ft s x0 ->  isFunDynamic' s || any (isRegisterDynamic' . snd) x0
   FCBinOp ft fbo fr fr' -> any isRegisterDynamic' [fr, fr']
   FCUnOp ft fuo fr -> isRegisterDynamic' fr
   FCPhi ft x0 -> True
   BitCast ft ft' fr -> isRegisterDynamic' fr
-  -- GetPointer ft fr fr' -> any isRegisterDynamic' [fr, fr']
   Return ft m_fr ->True
   FCEmptyExpr -> True
   FCFunArg ft s n ->True
   FCJump fr -> True
   FCCondJump fr fr' fr2 -> True
+  GetField ft s ft' fr -> isRegisterDynamic' fr
+  FCLoad ft ft' fr -> isRegisterDynamic' fr
+  FCStore ft fr ft' fr' -> any isRegisterDynamic' [fr, fr']
   where
     isFunDynamic' = isFunDynamic env
     isRegisterDynamic' = isRegisterDynamic env
 
-  
+
 convertRValue :: Environment -> FCRValue -> Maybe InternalVal
 convertRValue env fcr = if isRValueDynamic env fcr
   then Nothing
@@ -102,13 +113,15 @@ substituteRegisters substitution fcrvalue = case fcrvalue of
   FCBinOp ft fbo fr fr' -> FCBinOp ft fbo (subst fr) (subst fr')
   FCUnOp ft fuo fr -> FCUnOp ft fuo (subst fr)
   FCPhi ft x0 -> FCPhi ft (map (BiFunctor.first subst) x0)
-  -- BitCast ft fr ft' -> BitCast ft (subst fr) ft'
-  -- GetPointer ft fr fr' -> GetPointer ft (subst fr) (subst fr')
   Return ft m_fr -> Return ft (subst <$> m_fr)
   FCEmptyExpr -> FCEmptyExpr
   FCFunArg ft s n -> fcrvalue
   FCJump fr -> FCJump (subst fr)
   FCCondJump fr fr' fr2 ->  FCCondJump (subst fr) (subst fr') (subst fr2)
+  BitCast ft ft' fr -> BitCast ft ft' (subst fr)
+  GetField ft s ft' fr -> GetField ft s ft' (subst fr)
+  FCLoad ft ft' fr -> FCLoad ft ft' (subst fr)
+  FCStore ft fr ft' fr' -> FCStore ft (subst fr) ft' (subst fr')
   where
     subst :: FCRegister -> FCRegister
     subst reg = reg `fromMaybe` DM.lookup reg  substitution
@@ -162,7 +175,7 @@ lcseBlock env block arg = case block of
     (_, fs') = lcseBlock env fs arg''
     in
     (arg'', FCWhileBlock s fp' fc' fr fs' str x0)
-      
+
 gcse :: Environment -> (Arg,CommonValues, FCBlock) -> (Arg, CommonValues, FCBlock)
 gcse env (args, (vib, vbb), block) =
   case block of
@@ -212,7 +225,6 @@ gcse env (args, (vib, vbb), block) =
       block' = FCWhileBlock s fp fc fr fs' str x0
       in
       (args', (vib, vbb), block')
-    _ -> undefined
   where
     getValue' = getValue env
     gcse' = gcse env
@@ -237,7 +249,7 @@ gcse env (args, (vib, vbb), block) =
       (arg', list')
 
 
-getDynamicRegisters :: (DS.Set String)-> DS.Set FCRegister -> (FCBlock) -> DS.Set FCRegister
+getDynamicRegisters :: FCEnvironment -> DS.Set FCRegister -> FCBlock -> DS.Set FCRegister
 getDynamicRegisters _ _ _ = DS.empty
 -- getDynamicRegisters dfuns set block = case block of
 --   FCNamedSBlock s x0 x1 -> foldl' (\set (reg, fcrvalue) ->
@@ -252,7 +264,7 @@ getDynamicRegisters _ _ _ = DS.empty
 --   where
 --     getDynamicRegisters' = getDynamicRegisters dfuns
 
-gcseOptimizeProd :: DS.Set String-> FCBlock -> FCBlock
+gcseOptimizeProd :: FCEnvironment -> FCBlock -> FCBlock
 gcseOptimizeProd dynFun block =
   snd (gcse' (argInit,block))
   where

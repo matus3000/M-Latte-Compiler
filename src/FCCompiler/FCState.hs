@@ -50,7 +50,7 @@ data CompileTimeConstants = CTC {constMap :: DM.Map String Int,
 data FCState = FCState {fcsVenv::FCVarEnv, fcsSSAAloc::SSARegisterAllocator,
                         fcsRegMap::FCRegMap, fcsConstants::CompileTimeConstants,
                         fcsLabelAlloc::LabelAllocator}
-data OnRValueConflict = RegisterToRValue | TwoWay
+data OnRValueConflict = RegisterToRValue | TwoWay | RValueToReg
 
   -- Internal functions
 
@@ -142,18 +142,16 @@ addFCRValue fcrval onconflict fcstate = let
         (ssa', r) = if fCRValueType fcrval == Void
           then (ssa, VoidReg)
           else BiFunctor.second (Reg . show) (ssaNext ssa)
+        (regmap', rvaluemap') = case onconflict of
+          RegisterToRValue -> (DM.insert r fcrval regmap, rvaluemap)
+          TwoWay -> (DM.insert r fcrval regmap, VE.declareVar fcrval r rvaluemap)
+          RValueToReg -> (regmap, VE.declareVar fcrval r rvaluemap)
         fstate' =  fcsPutSSAAloc ssa' $
-                   fcsPutRegMap (FCRegMap
-                                 (DM.insert r fcrval regmap)
-                                 (case onconflict of
-                                   TwoWay -> VE.declareVar fcrval r rvaluemap
-                                   RegisterToRValue -> rvaluemap))
+                   fcsPutRegMap (FCRegMap regmap' rvaluemap')
                    fcstate
         in
         (fstate', Right r)
-      Just fr -> case onconflict of
-        TwoWay -> (fcstate, Left fr)
-        RegisterToRValue -> error "WIP"
+      Just fr -> (fcstate, Left fr)
 
 getRegisterType :: FCRegister -> FCState -> Maybe FCType
 getRegisterType reg fstate = case reg of

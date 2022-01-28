@@ -204,3 +204,8 @@ fCRValueType x = case x of
   FCPhi ft _ -> ft
   FCJump _ -> Void
   FCCondJump{} -> Void
+  BitCast ft ft' fr -> ft
+  GetField ft s ft' fr -> ft
+  FCLoad ft ft' fr -> ft
+  FCStore ft fr ft' fr' -> Void
+  

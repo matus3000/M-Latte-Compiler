@@ -154,6 +154,8 @@ translateAndExpr bn bb (Tr.IAnd (ie:ies)) save =
 
         return (returnBlock, r)
     f _ _ [] _ = undefined
+translateAndExpr bn bb _ save = error "Partial Function"
+
 translateOrExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool
   -> FCCompiler (BlockBuilder, (FCType, FCRegister))
 translateOrExpr bn bb (Tr.IOr (ie:ies)) save =
@@ -361,6 +363,7 @@ translateInstr name bb stmt = case stmt of
     (bb', (ft, r)) <- translateExpr' bb ie True
     return $ bbaddInstr (VoidReg, Return ft (Just r)) bb'
   Tr.IVRet -> return $ bbaddInstr (VoidReg, Return Void Nothing) bb
+  Tr.ICond {} -> error "Ta operacja jest niepotrzebna"
   Tr.ICondElse ie ib ib' (Tr.MD md) ->
     case ie of
       Tr.INot ie' -> translateInstr name bb (Tr.ICondElse ie' ib' ib (Tr.MD md))
@@ -548,16 +551,10 @@ unloadPointer ptr = \case
   _ -> error ""
 
 mockLoad :: FCRegister -> FCType -> FCType -> FCRegister -> FCCompiler ()
-mockLoad reg ftype ftypeptr ptr = -- do
-  -- regmap <- gets fccRegMap
-  -- let
-  --   map = _rvalueMap regmap
-  --   loadFCR = FCLoad ftype ftypeptr ptr
-  --   map' = if VE.containsVar loadFCR map
-  --       then VE.setVar loadFCR reg map
-  --       else VE.declareVar loadFCR reg map
-  -- modify $ fccPutRegMap (FCRegMap (_regMap regmap) map')
-  error "WIP"
+mockLoad reg ftype ftypeptr ptr = do
+  (fcstate, _) <- gets $ Fcs.addFCRValue (FCLoad ftype ftypeptr ptr) Fcs.RValueToReg 
+  put fcstate
+
 hasMutableArgs :: String -> FCCompiler Bool
 hasMutableArgs = undefined
 

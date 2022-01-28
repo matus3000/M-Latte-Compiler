@@ -5,21 +5,32 @@ module DeadCodeRemoval where
 import Data.List (foldl', foldr)
 import qualified Data.Set as DS
 import FCCompilerTypes
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, fromJust)
 import qualified Control.Arrow as BiFunctor
 import qualified Data.Bifunctor
+import FCCompiler.FCEnvironment (FCEnvironment)
+import FCCompiler.FCEnvironment as Fce
 
-type DynamicFunctions = DS.Set String
+type DynamicFunctions = FCEnvironment
 -- type LoopInfo
 type Environment = (DynamicFunctions)
 
+
 isRValDynamic :: DynamicFunctions -> FCRValue -> Bool
 isRValDynamic env fcrval = case fcrval of
-  FunCall ft s x1 -> DS.member s env
+  FunCall ft s x1 -> isPointer ft || fromJust (Fce.isIoFunction s env)
   Return ft m_fr -> True
   FCJump fr -> True
   FCCondJump fr fr' fr2 -> True
   _ -> False
+  where
+    isPointer :: FCType -> Bool
+    isPointer = \case
+      FCPointer ft -> True
+      UniversalPointer -> True
+      _ -> False
+
+-- modifiesVar 
 
 isBlockDynamic :: DynamicFunctions -> DS.Set FCRegister -> FCBlock -> Bool
 isBlockDynamic env regs = \case
@@ -51,67 +62,67 @@ getVars set fcrvalue = case fcrvalue of
 
 
 
-removeDeadCodeInstr :: DynamicFunctions -> DS.Set FCRegister -> [FCInstr] -> (DS.Set FCRegister, [FCInstr])
-removeDeadCodeInstr env set x = foldl'
-  (\(!set, rest) instr@(reg, x) ->
-      if DS.member reg set then (getVars set x, instr:rest)
-      else
-        if isRValDynamic env x
-        then (f  (getVars set x) reg,instr:rest)
-        else (set, rest))
-  (set, [])
-  (reverse x)
-  where
-    f :: DS.Set FCRegister -> FCRegister -> DS.Set FCRegister
-    f set x = case x of
-      Reg s -> DS.insert x set
-      _ -> set
+-- removeDeadCodeInstr :: DynamicFunctions -> DS.Set FCRegister -> [FCInstr] -> (DS.Set FCRegister, [FCInstr])
+-- removeDeadCodeInstr env set x = foldl'
+--   (\(!set, rest) instr@(reg, x) ->
+--       if DS.member reg set then (getVars set x, instr:rest)
+--       else
+--         if isRValDynamic env x
+--         then (f  (getVars set x) reg,instr:rest)
+--         else (set, rest))
+--   (set, [])
+--   (reverse x)
+--   where
+--     f :: DS.Set FCRegister -> FCRegister -> DS.Set FCRegister
+--     f set x = case x of
+--       Reg s -> DS.insert x set
+--       _ -> set
 
 
-removeUselessBlocks :: DynamicFunctions -> DS.Set FCRegister  -> FCBlock -> (DS.Set FCRegister, FCBlock)
-removeUselessBlocks env set block = case block of
-  FCCondBlock s fc fr fs ff fp x0 ->
-    if not (sensiblePhiBlock fp) && not (any importantBlock [fs, ff]) then
-      let
-        (set', fc') = removeDeadCode env set fc
-      in
-        if (importantBlock fc') then (set', fc')
-        else (set', FCNamedSBlock s [] x0)
-    else
-      let
-        (set', fc') = removeDeadCode env (DS.insert fr set) fc
-      in
-        (set', FCCondBlock s fc' fr fs ff fp x0)
-  where
-    sensiblePhiBlock :: FCBlock -> Bool
-    sensiblePhiBlock block = case block of
-      FCNamedSBlock s x0 x1 -> any (\(x,y) -> case y of
-        FunCall ft str x3 -> False
-        FCBinOp ft fbo fr fr' -> False
-        FCUnOp ft fuo fr -> False
-        FCPhi ft x3 -> True
-        BitCast ft fr ft' -> False
-        -- GetPointer ft fr fr' -> False
-        Return ft m_fr -> error "Ret in Phi"
-        FCEmptyExpr -> False
-        FCFunArg ft str n -> False
-        FCJump fr -> False
-        FCCondJump fr fr' fr2 -> False
-        ) x0
-      FCComplexBlock s fbs x0 -> any sensiblePhiBlock fbs
-      _ -> error "uselessPhiBlock"
-    importantBlock :: FCBlock -> Bool
-    importantBlock block = case block of
-      FCNamedSBlock s x0 x1 -> any (\(x,y)-> case y of
-        FCEmptyExpr -> False
-        FCFunArg ft str n -> False
-        FCJump fr -> False
-        FCCondJump fr fr' fr2 -> False
-        _ -> True) x0
-      FCComplexBlock s fbs x0 -> any importantBlock fbs
-      FCCondBlock s fb fr fb' fb2 fb3 x0 -> True -- Idziemy od dołu ku górze. Stąd gdy ponownie zstąpimy to wiemy, że nie jest pusty.
-      FCPartialCond s fb fr fb' fb2 x0 -> True
-      FCWhileBlock s fb fb' fr fb2 str x0 -> True
+-- removeUselessBlocks :: DynamicFunctions -> DS.Set FCRegister  -> FCBlock -> (DS.Set FCRegister, FCBlock)
+-- removeUselessBlocks env set block = case block of
+--   FCCondBlock s fc fr fs ff fp x0 ->
+--     if not (sensiblePhiBlock fp) && not (any importantBlock [fs, ff]) then
+--       let
+--         (set', fc') = removeDeadCode env set fc
+--       in
+--         if (importantBlock fc') then (set', fc')
+--         else (set', FCNamedSBlock s [] x0)
+--     else
+--       let
+--         (set', fc') = removeDeadCode env (DS.insert fr set) fc
+--       in
+--         (set', FCCondBlock s fc' fr fs ff fp x0)
+--   where
+--     sensiblePhiBlock :: FCBlock -> Bool
+--     sensiblePhiBlock block = case block of
+--       FCNamedSBlock s x0 x1 -> any (\(x,y) -> case y of
+--         FunCall ft str x3 -> False
+--         FCBinOp ft fbo fr fr' -> False
+--         FCUnOp ft fuo fr -> False
+--         FCPhi ft x3 -> True
+--         BitCast ft fr ft' -> False
+--         -- GetPointer ft fr fr' -> False
+--         Return ft m_fr -> error "Ret in Phi"
+--         FCEmptyExpr -> False
+--         FCFunArg ft str n -> False
+--         FCJump fr -> False
+--         FCCondJump fr fr' fr2 -> False
+--         ) x0
+--       FCComplexBlock s fbs x0 -> any sensiblePhiBlock fbs
+--       _ -> error "uselessPhiBlock"
+--     importantBlock :: FCBlock -> Bool
+--     importantBlock block = case block of
+--       FCNamedSBlock s x0 x1 -> any (\(x,y)-> case y of
+--         FCEmptyExpr -> False
+--         FCFunArg ft str n -> False
+--         FCJump fr -> False
+--         FCCondJump fr fr' fr2 -> False
+--         _ -> True) x0
+--       FCComplexBlock s fbs x0 -> any importantBlock fbs
+--       FCCondBlock s fb fr fb' fb2 fb3 x0 -> True -- Idziemy od dołu ku górze. Stąd gdy ponownie zstąpimy to wiemy, że nie jest pusty.
+--       FCPartialCond s fb fr fb' fb2 x0 -> True
+--       FCWhileBlock s fb fb' fr fb2 str x0 -> True
 
 -- removeDeadCode :: DynamicFunctions -> DS.Set FCRegister -> FCBlock -> (DS.Set FCRegister, FCBlock)
 -- removeDeadCode env set block = case block of

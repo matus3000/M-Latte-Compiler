@@ -153,7 +153,7 @@ simpleLvalueToInernal = \case
     in
     IMember ilv id
   LVarArr ma lv ex -> undefined
-  
+
 lvalueToBindable :: LValue -> Translator ((Int,Int),Bindable)
 lvalueToBindable = \case
   LVar ma (Ident id) -> return ((-1,-1) `fromMaybe` ma, Left id)
@@ -176,9 +176,9 @@ setLvaluesToRuntime lvalues = do
              Left s -> do
                (itype, ivalue) <- getVariable pos s
                newvalue <- case itype of
-                             LInt -> return RunTimeValue 
-                             LString -> return RunTimeValue 
-                             LBool -> return RunTimeValue 
+                             LInt -> return RunTimeValue
+                             LString -> return RunTimeValue
+                             LBool -> return RunTimeValue
                              LVoid -> undefined
                              LFun lt lts -> undefined
                              LArray lt -> undefined
@@ -188,16 +188,16 @@ setLvaluesToRuntime lvalues = do
              Right (ref, member) -> do
                (itype, ivalue) <- getMember pos ref member
                newvalue <- case itype of
-                             LInt -> return RunTimeValue 
-                             LString -> return RunTimeValue 
-                             LBool -> return RunTimeValue 
+                             LInt -> return RunTimeValue
+                             LString -> return RunTimeValue
+                             LBool -> return RunTimeValue
                              LVoid -> undefined
                              LFun lt lts -> undefined
                              LArray lt -> undefined
                              LClass str -> OwningReference <$> newClass str RunTimeValue
                              LGenericClass str lts -> undefined
                setMember pos ref member (itype, newvalue)) x
-    
+
 -- setMemberUnsafe ::  Reference -> String -> IValue -> Translator ()
 -- setMemberUnsafe ref member ivalue = do
 --   z <- gets tsMemory
@@ -427,6 +427,7 @@ f (ENewClass pos parserType) = do
       when (isNothing x) (throwErrorInContext $ UndefinedClass (fromJust pos) (show itype))
       newClass s Undefined
   return (itype, OwningReference reference, INew itype)
+f (ENewArray {}) = undefined "Placeholder"
 
 simplify :: (IType, IValue, IExpr) -> (IType, IValue, IExpr)
 simplify pair = pair
@@ -640,33 +641,30 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
           then return ([icond], True)
           else BiFunctor.first (icond:) <$> stmtsToInternal rest
 -- Legacy --
--- stmtsToInternal ((While pos expr stmt md):rest) = do
---   let ascmd = DS.toAscList  md
---   venv<- gets tsVarState
---   let venv' = makeDynamic ascmd venv
---   modify $ tsModifyVarState (const venv')
---   modify $ tsModifyVarState (protectVars_ ascmd)
+stmtsToInternal ((While pos expr stmt md):rest) = do
+  let ascmd =  md
 
---   (itype, ivalue, iexpr) <- exprToInternal expr
---   unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
---   case ivalue of
---     (IValueBool False) -> modify (tsModifyVarState endProtection) >> stmtsToInternal rest
---     _ -> do
---       (iblock, returnBoolean) <- blockToInternal $ VirtualBlock [stmt]
---       modify $ tsModifyVarState endProtection
---       BiFunctor.first (IWhile iexpr iblock (MD md):) <$> stmtsToInternal rest
---   where
---     makeDynamic :: [String] -> VariableState -> VariableState
---     makeDynamic s venv = foldl (\venv (key, val) -> VE.setVar key val venv) venv (zip s t)
---       where
---         t = toDynamic s venv
---     toDynamic :: [String] -> VariableState -> [(IType, IValue)]
---     toDynamic ss venv = map
---       (\key ->
---           case lookupVar key venv of
---             Just (itype, ivalue) -> (itype, RunTimeValue)
---             Nothing -> (LVoid, RunTimeValue))
---       ss
+  setLvaluesToRuntime md
+
+  (itype, ivalue, iexpr) <- exprToInternal expr
+  unless (itype `same` LBool) (throwErrorInContext (TypeConflict ((-1,-1) `fromMaybe` pos) LBool (cast itype)))
+  case ivalue of
+    (IValueBool False) -> stmtsToInternal rest
+    _ -> do
+      (iblock, returnBoolean) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt])
+      BiFunctor.first (IWhile iexpr iblock (MD $ map simpleLvalueToInernal md):) <$> stmtsToInternal rest
+  where
+    makeDynamic :: [String] -> VariableState -> VariableState
+    makeDynamic s venv = foldl (\venv (key, val) -> VE.setVar key val venv) venv (zip s t)
+      where
+        t = toDynamic s venv
+    toDynamic :: [String] -> VariableState -> [(IType, IValue)]
+    toDynamic ss venv = map
+      (\key ->
+          case lookupVar key venv of
+            Just (itype, ivalue) -> (itype, RunTimeValue)
+            Nothing -> (LVoid, RunTimeValue))
+      ss
 stmtsToInternal ((SExp _ expr):rest) =
   do
     (_, _, iexpr) <- exprToInternal expr
@@ -729,11 +727,11 @@ assertMain fEnv =
       Just (LInt, _) -> return ()
       _ -> throwError $ SemanticError (0,0) NoMain
 
-data IProgram = IProgram [IFun] [IClass] StructureEnvironment 
+data IProgram = IProgram [IFun] [IClass] StructureEnvironment
 
 data IClass = IClass {icName :: String,
                      icDefinedMethods :: [()]}
-              
+
 programToInternal :: Program -> CompilerExcept IProgram
 programToInternal program@(Program _ topDefs classDefs) =
   let
@@ -857,6 +855,9 @@ getCalledFunctions (IFun _ _ _ iblock) =
       IAdd iao ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
       IMul imo ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
       IRel iro ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
+      INew {} -> DS.insert "new" set
+      INull {} -> set
+      ICast {} -> set
     getCalledFunctionsItems :: [IItem] -> DS.Set String ->DS.Set String
     getCalledFunctionsItems items set = foldl (flip x) set items
       where
@@ -886,7 +887,44 @@ containsPossiblyEndlessLoop (IFun _ _ _ iblock) =
       IStmtEmpty -> False
 
 _getNamesOfStateChangingFunctions :: DS.Set String -> [IFun] -> DS.Set String
-_getNamesOfStateChangingFunctions seed ifuns = undefined
+_getNamesOfStateChangingFunctions seed ifuns = let
+  x = map (const DS.empty) ifuns
+  y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
+
+  initDepMap = foldl (\map (IFun fname _ _ _) -> DM.insert fname DS.empty map) DM.empty ifuns
+  buildDepMap :: [(String, DS.Set String)] -> DM.Map String (DS.Set String)
+  buildDepMap list = foldr f initDepMap list
+    where
+          f :: (String, DS.Set String) -> DM.Map String (DS.Set String) -> DM.Map String (DS.Set String)
+          f (fname, set) map = foldl (\map pname -> DM.insert
+                                                    pname
+                                                    (DS.insert fname (DS.empty `fromMaybe`DM.lookup pname map)) map)
+                               map set
+  loopingFunctions = foldl' (\set ifun@(IFun fname _ _ _) ->
+                                   if containsPossiblyEndlessLoop ifun
+                                   then DS.insert fname set
+                                   else set) DS.empty ifuns
+  buildDynamic :: DM.Map String (DS.Set String) -> DS.Set String -> DS.Set String -> DS.Set String
+  buildDynamic map emplaced set = if null emplaced then set else
+    let  emplaced' = foldl (\emplaced' name ->
+                                  DS.union emplaced'
+                                  (DS.difference (DS.empty `fromMaybe` DM.lookup name map) set))
+                         DS.empty emplaced
+    in
+      buildDynamic map emplaced' (DS.union emplaced' set)
+  _depMap = buildDepMap y
+  _externalDyn = ["printInt", "printString", "error", "readInt", "readString"]
+  _externalFun = ["printInt", "printString", "error", "readInt", "readString",
+                      "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
+                      "_strneq"]
+  _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
+  _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
+  _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
+                          foldl (\set pair -> set `DS.union` snd pair) DS.empty y
+  in
+    _dynamicFunctions
+
+
 functionMetaDataNew :: [IFun] -> FunctionMetadata
 functionMetaDataNew ifuns =
   let x = map (const DS.empty) ifuns

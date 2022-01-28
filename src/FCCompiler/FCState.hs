@@ -28,6 +28,7 @@ import qualified Control.Arrow as BiFunctor
 import FCCompilerTypes (FCRValue, FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr))
 import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
+import Data.Maybe (isJust)
 
   -- Internal Types --
 type FCVarEnv = VarEnv String FCRegister
@@ -75,7 +76,7 @@ regmapCloseConditionalBlock (FCRegMap m1 m2) = FCRegMap m1 (VE.closeClosure m2)
 regmapLookupRegister :: FCRegister -> FCRegMap -> Maybe FCRValue
 regmapLookupRegister x regmap = case x of
   Reg{} -> DM.lookup x (_regMap regmap)
-  _ -> undefined
+  _ -> error "Real undefined behaviour"
 
 fcRegMapNew = FCRegMap DM.empty (VE.openClosure VE.newVarEnv)
 
@@ -146,13 +147,13 @@ clearRValue :: FCRValue -> FCState -> FCState
 clearRValue = undefined
 
 setVar :: String -> FCRegister -> FCState -> FCState
-setVar = undefined
+setVar var reg = fcsModifyVenv (VE.setVar var reg)
 declareVar :: String -> FCRegister -> FCState -> FCState
-declareVar = undefined
+declareVar var reg  = fcsModifyVenv (VE.declareVar var reg)
 lookupVar ::  String -> FCState -> Maybe FCRegister
-lookupVar = undefined
+lookupVar var = VE.lookupVar var . fcsVenv
 isVarDeclared :: String -> FCState -> Bool
-isVarDeclared = undefined
+isVarDeclared var = isJust . lookupVar var
 protectVars :: [String] -> FCState -> FCState
 protectVars vars = let
   f :: FCVarEnv -> FCVarEnv
@@ -179,7 +180,11 @@ closeConditionalBlock :: FCState -> FCState
 closeConditionalBlock = closeBlock . fcsModifyRegMap regmapCloseConditionalBlock
 
 nextLabel :: FCState -> (FCState, String)
-nextLabel = undefined
+nextLabel fstate = let
+  la = fcsLabelAlloc fstate
+  (la', label) = laNextLabel la
+  in
+  (fcsPutLabelAlloc la' fstate, label)
 
 generateLabels :: Int -> FCState -> (FCState, [String])
 generateLabels n fstate = BiFunctor.second reverse $ foldl
@@ -188,6 +193,6 @@ generateLabels n fstate = BiFunctor.second reverse $ foldl
                           [1..n]
 
 lookupConstString :: String -> FCState -> Maybe FCRegister
-lookupConstString = undefined
+lookupConstString string fstate = ConstString <$> DM.lookup string (constMap $ fcsConstants fstate)
 addConstString :: String -> FCState -> (FCState, FCRegister)
-addConstString = undefined
+addConstString string fstate = BiFunctor.first (`fcsPutConstants` fstate) (ctcEmplaceString string fstate)

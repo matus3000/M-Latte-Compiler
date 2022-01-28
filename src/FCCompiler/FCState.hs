@@ -7,6 +7,8 @@ module FCCompiler.FCState (FCState(fcsConstants),
                            declareVar,
                            lookupVar,
                            isVarDeclared,
+                           openFunBlock,
+                           closeFunBlock,
                            openBlock,
                            closeBlock,
                            openConditionalBlock,
@@ -18,14 +20,17 @@ module FCCompiler.FCState (FCState(fcsConstants),
                            protectVars,
                            endProtection,
                            lookupConstString,
-                           addConstString
+                           addConstString,
+                           allocateRegister,
+                           setRegister
                            ) where
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
 import qualified Data.List as DL
 import qualified Control.Arrow as BiFunctor
+import Control.Monad (join)
 
-import FCCompilerTypes (FCRValue, FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr))
+import FCCompilerTypes (FCRValue (FCFunArg), FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr))
 import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import Data.Maybe (isJust)
@@ -101,7 +106,30 @@ new :: FCState
 new = FCState newVarEnv ssaRegAllocNew fcRegMapNew ctcNew laNew
 
 allocateRegister :: FCType -> FCState -> (FCState, FCRegister)
-allocateRegister = undefined
+allocateRegister fctype fcstate = let
+  x  = ($ fcsRegMap fcstate) BiFunctor.*** ($ fcsRegMap fcstate)
+  (regmap, rvaluemap) = x (_regMap, _rvalueMap)
+  (fcstate', r) = BiFunctor.first (`fcsPutSSAAloc` fcstate ) (ssaNext (fcsSSAAloc fcstate))
+  reg = Reg (show r)
+  fcstate'' = fcsPutRegMap (FCRegMap (DM.insert reg (FCFunArg fctype "" (-1)) regmap)
+                             rvaluemap)
+              fcstate'
+  in
+  (fcstate'', reg)
+
+setRegister :: FCRegister -> FCRValue -> FCState -> FCState
+setRegister reg newvalue fcstate = case DM.lookup reg $ _regMap (fcsRegMap fcstate) of
+  Nothing -> error "You cannot set unallocated register"
+  Just fv -> case fv of
+    FCFunArg ft "" (-1) -> if ft == fCRValueType newvalue then
+      let
+        regmap = DM.insert reg newvalue (_regMap (fcsRegMap fcstate))
+        rvalmap = VE.declareVar newvalue reg (_rvalueMap $ fcsRegMap fcstate)
+      in
+        fcsPutRegMap (FCRegMap regmap rvalmap) fcstate
+      else
+      error "Types are not matching"
+    _ -> error "You can set allocateRegister only once"
 
 addFCRValue :: FCRValue -> OnRValueConflict -> FCState -> (FCState, Either FCRegister FCRegister)
 addFCRValue fcrval onconflict fcstate = let
@@ -169,6 +197,9 @@ endProtection = fcsModifyVenv VE.closeClosure
 
 openFunBlock :: FCState -> FCState
 openFunBlock fstate = FCState newVarEnv ssaRegAllocNew fcRegMapNew (fcsConstants fstate)  (fcsLabelAlloc fstate)
+closeFunBlock :: FCState -> FCState
+closeFunBlock = id
+
 openBlock :: FCState -> FCState
 openBlock x = fcsPutVenv (VE.openClosure (fcsVenv x)) x
 closeBlock :: FCState -> FCState
@@ -195,4 +226,5 @@ generateLabels n fstate = BiFunctor.second reverse $ foldl
 lookupConstString :: String -> FCState -> Maybe FCRegister
 lookupConstString string fstate = ConstString <$> DM.lookup string (constMap $ fcsConstants fstate)
 addConstString :: String -> FCState -> (FCState, FCRegister)
-addConstString string fstate = BiFunctor.first (`fcsPutConstants` fstate) (ctcEmplaceString string fstate)
+addConstString string fstate = BiFunctor.first (`fcsPutConstants` fstate) (ctcEmplaceString string
+                                                                           (fcsConstants fstate))

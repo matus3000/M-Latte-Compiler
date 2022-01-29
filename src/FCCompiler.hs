@@ -25,7 +25,7 @@ import qualified Translator as Tr
 import qualified Data.Functor
 import FCCompilerState (VariableEnvironment(..),
                         ConstantsEnvironment(..))
-import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi), FCRegister(..),
+import FCCompilerTypes (FCRValue(FCEmptyExpr, FCPhi, FCSizeOf), FCRegister(..),
                         FCType(..),
                         FCBlock(..))
 import VariableEnvironment(VarEnv(..), newVarEnv)
@@ -45,6 +45,7 @@ import qualified FCCompiler.FCEnvironment as Fce
 import FCCompiler.FCState (FCState (fcsConstants))
 import qualified FCCompiler.FCState as Fcs
 import System.Console.Terminfo.Effects (Attributes(reverseAttr))
+import Translator.Translator (universalReference)
 
 externalFunctions :: [([Char], (FCType, [FCType]))]
 externalFunctions = [("printString", (Void, [DynamicStringPtr])),
@@ -227,7 +228,7 @@ translateILValue bb ilvalue bool = do
       (fctype, fcreg) <- getVar name
       className <- case (fctype, fcreg) of
         (FCPointer (Class className), Reg _) -> return className
-        _ -> error "Internal Error : Undefined behaviour"
+        _ -> error $ "Internal Error : Undefined behaviour " ++ (show fctype)
       memberPointerType <- FCPointer <$> askForFieldType className member
       (bb', returnReg) <- emplaceFCRValue (GetField memberPointerType member fctype fcreg) bb
       return (bb', (memberPointerType, returnReg))
@@ -327,8 +328,16 @@ translateExpr bname bb ie save =
         (bb'', (ftype2, r2)) <- translateExpr' bb' ie' True
         (bb''', reg) <- emplaceFCRValue (FCBinOp ftype1 (convert iro) r1 r2) bb''
         return (bb''', (Bool, reg))
-      Tr.INull -> undefined
-      Tr.INew ltype -> undefined
+      Tr.INull -> return (bb, (universalPointer, FCNull universalPointer))
+      Tr.INew ltype -> do
+        let fctype = convert ltype
+            classType = derefencePointerType (convert ltype)
+            sizeInstr = FCSizeOf classType
+            sizeType = fCRValueType sizeInstr
+        (bb', size) <- emplaceFCRValue sizeInstr bb
+        (bb'', reg) <- emplaceFCRValue (FunCall DynamicStringPtr "new" [(sizeType, size)]) bb'
+        (bb''', res) <- emplaceFCRValue (BitCast fctype DynamicStringPtr reg) bb''
+        return (bb''', (fctype, res))
       Tr.ICast ltype iexpr -> undefined
   where
     translateExpr' = translateExpr bname
@@ -498,7 +507,7 @@ translateFun (Tr.IFun s lt lts ib) = do
   withOpenFunBlock s lt lts $ \res ->
     do
       fbodyBB <- translateBlock s ib bbNew
-      dynamicFuns <- return $ error "Tutaj należy zmienić na przekazywanie FCE"
+      dynamicFuns <- ask
       let
         optimize :: FCBlock -> FCBlock
         optimize =
@@ -531,7 +540,7 @@ translateIClass = \case
       definedFields = map (BiFunctor.second convert) (Fce.definedFields sd)}
 
 translateIClasses :: [Tr.IClass] -> FCCompiler [FCClass]
-translateIClasses = mapM translateIClass 
+translateIClasses = mapM translateIClass
 
 compileProg :: Tr.IProgram  -> FCProg
 compileProg (Tr.IProgram ifuns iclass classEnv) = let
@@ -543,7 +552,7 @@ compileProg (Tr.IProgram ifuns iclass classEnv) = let
   _ftypeMapInit = DM.fromList (map (BiFunctor.second fst) externalFunctions)
   _ftypeMap :: DM.Map String FCType
   _ftypeMap = foldl' (\map (Tr.IFun fname ltype _ _) -> DM.insert fname (convert ltype) map) _ftypeMapInit ifuns
-  funEnv = Fce.new _ftypeMap (Tr.dynamicFunctions funMetadata) classEnv
+  funEnv = Fce.new _ftypeMap (Tr.dynamicFunctions funMetadata) (Tr.mutableArgs funMetadata) classEnv
   ((funBodies, classes), a) = runState (runReaderT (do
                                             ifuns <- translateIFuns ifuns
                                             iclasses <- translateIClasses iclass
@@ -556,6 +565,7 @@ compileProg (Tr.IProgram ifuns iclass classEnv) = let
     FCProg _usedExternals constants funBodies classes
   where
     initialFcc = Fcs.new
+
 
 unloadPointer :: FCRegister -> FCType -> FCCompiler ()
 unloadPointer ptr = \case
@@ -577,6 +587,7 @@ mockLoad reg ftype ftypeptr ptr = do
 emplaceFCRValue :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
 emplaceFCRValue rvalue bb = do
   case rvalue of
+    FunCall _ "new" _ -> do g rvalue bb
     FunCall ft fname x0 -> do
       (ioFun, muts, returnsPointer) <- asks (\x -> (fromJust $ Fce.isIoFunction fname x,
                                                     fromJust $ Fce.hasMutableArgs fname x,
@@ -611,7 +622,11 @@ emplaceFCRValue rvalue bb = do
         Right r' -> put fstate' >> return (bbaddInstr (r', rvalue) bb, r')
 
 askForFieldType :: String -> String -> FCCompiler FCType
-askForFieldType = undefined
+askForFieldType className fieldName= do
+  let errorNoClass = ((error $ "No class " ++ className ++" in SENV.") `fromMaybe`)
+      errorNoField = fromMaybe (error $ "No field " ++ fieldName ++ " for class className")
+  x <- asks $ errorNoField . DL.lookup fieldName . Fce.fields . errorNoClass . Fce.getClassData className
+  return (convert x)
 
 getConstStringReg :: String -> FCCompiler FCRegister
 getConstStringReg s = do

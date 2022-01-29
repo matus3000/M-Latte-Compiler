@@ -5,7 +5,7 @@ module DeadCodeRemoval where
 import Data.List (foldl', foldr, insert)
 import qualified Data.Set as DS
 import FCCompilerTypes
-import Data.Maybe (fromMaybe, fromJust)
+import Data.Maybe (fromMaybe, fromJust, catMaybes, mapMaybe)
 import qualified Control.Arrow as BiFunctor
 import qualified Data.Bifunctor
 import FCCompiler.FCEnvironment (FCEnvironment)
@@ -19,6 +19,7 @@ type Environment = (DynamicFunctions)
 isRValDynamic :: DynamicFunctions -> DS.Set FCRegister -> FCRValue -> Bool
 isRValDynamic env set fcrval = case fcrval of
   FunCall ft s x1 -> isPointer ft || fromJust (Fce.isIoFunction s env) || modifiesImportantThings s x1
+  FCStore ft fr ft' fr' -> True
   Return ft m_fr -> True
   FCJump fr -> True
   FCCondJump fr fr' fr2 -> True
@@ -33,9 +34,10 @@ isRValDynamic env set fcrval = case fcrval of
     modifiesImportantThings s args =
       let
         x = fromJust $ Fce.getMutabaleArgsOfFunction s env
-        res = map (((`DS.member` set) . snd) . (args !!)) x
+        x' = zip args x
+        modifiedArgs = mapMaybe (\(x,y)-> if y then Just x else Nothing) x'
       in
-        or res
+        (not $ null modifiedArgs)
 -- modifiesVar 
 
 isBlockDynamic :: DynamicFunctions -> DS.Set FCRegister -> FCBlock -> Bool
@@ -53,7 +55,7 @@ insertReg set x = case x of
   _ -> set
 
 getVars :: DS.Set FCRegister -> FCRValue -> DS.Set FCRegister
-getVars set fcrvalue = case fcrvalue of 
+getVars set fcrvalue = case fcrvalue of
   FunCall ft s x1 -> foldl' insertReg set (map snd x1)
   FCBinOp ft fbo fr fr' -> foldl' insertReg set [fr, fr']
   FCUnOp ft fuo fr -> insertReg set fr

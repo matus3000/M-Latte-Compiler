@@ -22,7 +22,8 @@ module FCCompilerTypes (
   derefencePointerType,
   fCRValueType,
   jump,
-  conditionalJump)
+  conditionalJump,
+  universalPointer)
 where
 
 import Control.Monad.Except (Except, MonadError)
@@ -34,6 +35,8 @@ import qualified Data.Map as DM
 import qualified IDefinition as IDef
 import qualified Data.Foldable
 
+universalPointer :: FCType
+universalPointer = FCPointer (Class "")
 
 data FCControlFlowOp = Jmp
 
@@ -43,7 +46,7 @@ data FCUnaryOperator = Neg | BoolNeg
 
 data FCType = Int | Bool | DynamicStringPtr | Void | ConstStringPtr Int | Class String | FCPointer FCType |
   UniversalPointer
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 data FCBinaryOperator = Add | Sub | Div | Mul | Mod | LShift | RShif | ByteAnd | ByteOr | ByteXor |
                         BoolAnd | BoolOr | BoolXor | Le | Equ | Neq | Lth | Gth | Ge
@@ -91,8 +94,10 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCJump FCRegister |
                 FCCondJump FCRegister FCRegister FCRegister |
                 GetField FCType String FCType FCRegister |
+                GetElementPtr FCType Int FCType FCRegister |
                 FCLoad FCType FCType FCRegister |
-                FCStore FCType FCRegister FCType FCRegister
+                FCStore FCType FCRegister FCType FCRegister |
+                FCSizeOf FCType 
   deriving (Eq, Ord)
 
 type FCInstr = (FCRegister, FCRValue)
@@ -216,4 +221,6 @@ fCRValueType x = case x of
   GetField ft s ft' fr -> ft
   FCLoad ft ft' fr -> ft
   FCStore ft fr ft' fr' -> Void
+  FCSizeOf ft -> Int
+  _ -> error "Internal"
 

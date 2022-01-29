@@ -427,7 +427,7 @@ f (ENewClass pos parserType) = do
       when (isNothing x) (throwErrorInContext $ UndefinedClass (fromJust pos) (show itype))
       newClass s Undefined
   return (itype, OwningReference reference, INew itype)
-f (ENewArray {}) = undefined "Placeholder"
+f ENewArray {} = undefined "Placeholder"
 
 simplify :: (IType, IValue, IExpr) -> (IType, IValue, IExpr)
 simplify pair = pair
@@ -960,11 +960,19 @@ functionMetaDataNew ifuns =
       _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
       _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
                           foldl (\set pair -> set `DS.union` snd pair) DS.empty y
+      _mutargs :: DM.Map String [Bool]
+      _mutargs = DM.fromList (foldl (\result (IFun fname _ args _) ->
+                                    (fname, (map (\(_, ltype) ->
+                                                    case ltype of
+                                                      LArray lt -> True
+                                                      LClass s -> True
+                                                      _ -> False) args)):result) [] ifuns)
   in
-    FM _somehowCalledFun _dynamicFunctions
+    FM _somehowCalledFun _dynamicFunctions _mutargs
 
 data FunctionMetadata = FM {usedExternal :: DS.Set String,
-                            dynamicFunctions :: DS.Set String}
+                            dynamicFunctions :: DS.Set String,
+                            mutableArgs :: DM.Map String [Bool]}
 
 --------------------------------------------------------------------------------------------------
 

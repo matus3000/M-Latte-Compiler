@@ -194,7 +194,7 @@ endProtection :: FCState -> FCState
 endProtection = fcsModifyVenv VE.closeClosure
 
 openFunBlock :: FCState -> FCState
-openFunBlock fstate = FCState newVarEnv ssaRegAllocNew fcRegMapNew (fcsConstants fstate)  (fcsLabelAlloc fstate)
+openFunBlock fstate = FCState (VE.openClosure newVarEnv) ssaRegAllocNew fcRegMapNew (fcsConstants fstate)  (fcsLabelAlloc fstate)
 closeFunBlock :: FCState -> FCState
 closeFunBlock = id
 

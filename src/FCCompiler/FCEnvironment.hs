@@ -16,21 +16,22 @@ import qualified Data.Set as DS
 import Data.Maybe (fromJust)
 
 data FCFunEnv = FCFunEnv {retTypes :: DM.Map String FCType,
+                          mutableArgs :: DM.Map String [Bool],
                           ioFuns :: DS.Set String}
 
 data FCEnvironment = FCEnv {fEnv :: FCFunEnv,
                             sEnv :: StructureEnvironment}
 
-new :: DM.Map String FCType -> DS.Set String -> StructureEnvironment -> FCEnvironment
-new retTypes ioFuns = FCEnv (FCFunEnv retTypes ioFuns)
+new :: DM.Map String FCType -> DS.Set String  -> DM.Map String [Bool]-> StructureEnvironment -> FCEnvironment
+new retTypes ioFuns mutargs = FCEnv (FCFunEnv retTypes mutargs ioFuns)
 functionType :: String -> FCEnvironment -> Maybe FCType
 functionType fname fcenv = DM.lookup fname $ (retTypes . fEnv) fcenv
 isIoFunction :: String -> FCEnvironment -> Maybe Bool
 isIoFunction fname fcenv = Just $ DS.member fname $ (ioFuns . fEnv) fcenv
 hasMutableArgs :: String -> FCEnvironment -> Maybe Bool
-hasMutableArgs = undefined
-getMutabaleArgsOfFunction :: String -> FCEnvironment -> Maybe [Int]
-getMutabaleArgsOfFunction = undefined
+hasMutableArgs funName fcenv = or <$> DM.lookup funName ((mutableArgs.fEnv) fcenv)
+getMutabaleArgsOfFunction :: String -> FCEnvironment -> Maybe [Bool]
+getMutabaleArgsOfFunction funname = DM.lookup funname . mutableArgs . fEnv
 getClassData :: String -> FCEnvironment -> Maybe StructureData
 getClassData className fcenv = DM.lookup className $ (classMap . sEnv) fcenv
 

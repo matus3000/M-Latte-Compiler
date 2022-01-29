@@ -3,20 +3,33 @@ module LLVMCompiler where
 
 import Prelude
 import Data.List (foldl')
+import qualified Data.Map as DM
 import FCCompilerTypes
 import FCCompiler (bbaddInstr)
-import Control.Monad.State (modify, State, MonadState(put, get), execState)
+import Control.Monad.State.Strict (modify, State, MonadState(put, get), execState)
 import Control.Monad.Reader (ReaderT, ask, asks, local, runReaderT)
 import Control.Monad.State (unless)
-import Data.Char(ord)
+
+import Data.List as DL
 import Numeric(showHex)
+import qualified Control.Arrow as BiFunctor
+import Data.Maybe (fromMaybe)
+import Data.Char (ord)
+import System.Process (CreateProcess(env))
 
 type ExternalImport = (String, (FCType, [FCType]))
 data LLVMInstr = FC_ FCInstr | LL String
 data LLVMFunDecl = LLVMFunDecl String FCType [(FCType, FCRegister)] [LLVMInstr]
+
+data LLVMClassDecl = LLVMClassDecl {llClassName :: String,
+                                    llFieldsMap :: DM.Map String Int,
+                                    llFields :: [FCType],
+                                    llNextId :: Int}
+
 data LLVMModule = LLVMModule {externalImports::[ExternalImport],
                               constants::[(FCRegister, String)],
-                              functions::[LLVMFunDecl]}
+                              functions::[LLVMFunDecl],
+                              classes :: [LLVMClassDecl]}
 type LLVMBlockBuilder = [LLVMInstr]
 
 dummyReturn :: FCType -> LLVMInstr
@@ -25,6 +38,7 @@ dummyReturn = \case
   Bool -> FC_ (VoidReg, Return Bool (Just $ LitBool False))
   DynamicStringPtr -> FC_ (VoidReg, Return DynamicStringPtr $ Just (FCNull DynamicStringPtr))
   Void -> FC_ (VoidReg, Return Void Nothing)
+  fctype -> FC_ (VoidReg, Return fctype (Just $ FCNull fctype))
 
 changesFlow :: LLVMInstr->Bool
 changesFlow x = case x of
@@ -35,45 +49,97 @@ changesFlow x = case x of
     _ -> False
   LL s -> False
 
-bbAddInstr :: LLVMBlockBuilder -> LLVMInstr -> LLVMBlockBuilder
-bbAddInstr = flip (:)
 
-toLLVMBuilder :: LLVMBlockBuilder -> FCBlock -> LLVMBlockBuilder
-toLLVMBuilder up block = case block of
-  FCNamedSBlock s x0 x1 -> foldl' bbAddInstr up' (map convert x0)
-  FCComplexBlock s fbs x0 -> foldl' toLLVMBuilder up' fbs
+type LLVMClassEnv = DM.Map String LLVMClassDecl
+type LLVMEnv = LLVMClassEnv
+
+llEnvFieldMapping :: String -> String -> LLVMEnv -> Int
+llEnvFieldMapping className fieldName env = let
+  sEnv = env
+  classData = error ("Class " ++ className ++ " not found") `fromMaybe` DM.lookup className sEnv
+  fieldIndex = error ("No mapping of field " ++ fieldName ++ "for class " ++ className)
+               `fromMaybe`
+               DM.lookup fieldName (llFieldsMap classData)
+  in
+  fieldIndex
+
+llEnvMethodMapping :: String -> String -> LLVMEnv -> Int
+llEnvMethodMapping = undefined
+
+toLLVMStructs :: [FCClass] -> (LLVMClassEnv, [LLVMClassDecl])
+toLLVMStructs fcclasses = (\res -> (DM.fromList (map (\x -> (llClassName x, x)) res), res))
+  $ reverse (foldl f [] fcclasses)
+  where
+    f :: [LLVMClassDecl] -> FCClass
+      -> [LLVMClassDecl]
+    f res fcclass = let
+      name = className fcclass
+      superclass = parentName fcclass
+      parent = case superclass of
+        Just name -> Just $ error "Something is wrong here" `fromMaybe` DL.find ((name ==) . llClassName) res
+        _ -> Nothing
+      seed@(inheritedMap, inheritedFields, inheritedIndex) = case parent of
+        Nothing -> (DM.empty, [], 0)
+        Just lcd -> (llFieldsMap lcd, llFields lcd, llNextId lcd)
+      -- fieldMapper :: (DM.Map String Int, [FCType], Int) ->
+      (_llFieldsMap, _llFields, _llNextId) = (\(x,y,z) -> (x,reverse y,z)) $ foldl
+        (\(map,res,id) (fname, ftype)->
+            (DM.insert fname (id+1) map, ftype:res, id+1)) seed (definedFields fcclass)
+      in
+      LLVMClassDecl name _llFieldsMap _llFields _llNextId:res
+
+bbAddInstr :: LLVMEnv -> LLVMBlockBuilder -> LLVMInstr -> LLVMBlockBuilder
+bbAddInstr env bb linstr = case linstr of
+  FC_ inst@(reg, fcinstr) -> case fcinstr of
+    GetField ft s ft' fr ->
+      let
+        className = case ft' of
+          FCPointer (Class className) -> className
+          _ -> error "Malformed"
+        index = llEnvFieldMapping className s env
+      in
+        FC_ (reg, GetElementPtr ft index ft' fr):bb
+    _ -> linstr : bb
+  LL s -> linstr : bb
+
+toLLVMBuilder :: LLVMEnv -> LLVMBlockBuilder -> FCBlock -> LLVMBlockBuilder
+toLLVMBuilder env up block = case block of
+  FCNamedSBlock s x0 x1 -> foldl' bbAddInstr' up' (map convert x0)
+  FCComplexBlock s fbs x0 -> foldl' toLLVMBuilder' up' fbs
   FCCondBlock s fc fr fs ff fp x0 -> let
-    bbc = toLLVMBuilder up' fc
-    bbfr = bbAddInstr bbc (FC_ (VoidReg, conditionalJump fr (Et (bname fs)) (Et (bname ff))))
-    bbfs = toLLVMBuilder bbfr fs
-    bbff = toLLVMBuilder bbfs ff
+    bbc = toLLVMBuilder' up' fc
+    bbfr = bbAddInstr' bbc (FC_ (VoidReg, conditionalJump fr (Et (bname fs)) (Et (bname ff))))
+    bbfs = toLLVMBuilder' bbfr fs
+    bbff = toLLVMBuilder' bbfs ff
     in
-    toLLVMBuilder bbff fp
+    toLLVMBuilder' bbff fp
   FCPartialCond s fc fr fs ff x0 -> let
-    bbc = toLLVMBuilder up' fc
-    bbfr = bbAddInstr bbc (FC_ (VoidReg, conditionalJump fr (Et (bname fs)) (Et (bname ff))))
-    bbfs = toLLVMBuilder bbfr fs
-    bbff = toLLVMBuilder bbfs ff
+    bbc = toLLVMBuilder' up' fc
+    bbfr = bbAddInstr' bbc (FC_ (VoidReg, conditionalJump fr (Et (bname fs)) (Et (bname ff))))
+    bbfs = toLLVMBuilder' bbfr fs
+    bbff = toLLVMBuilder' bbfs ff
     in
     bbff
   FCWhileBlock s fp fc fr fs str x0 -> let
-    bbw = bbAddInstr up' (FC_ (VoidReg, jump (bname fp)))
-    bbfs = bbAddInstr (toLLVMBuilder bbw fs) (FC_ (VoidReg, jump (bname fp)))
-    bbfp = toLLVMBuilder bbfs fp
-    bbfc = toLLVMBuilder bbfp fc
-    res = bbAddInstr bbfc (FC_ (VoidReg, conditionalJump fr (Et $ bname fs) (Et str)))
+    bbw = bbAddInstr' up' (FC_ (VoidReg, jump (bname fp)))
+    bbfs = bbAddInstr' (toLLVMBuilder' bbw fs) (FC_ (VoidReg, jump (bname fp)))
+    bbfp = toLLVMBuilder' bbfs fp
+    bbfc = toLLVMBuilder' bbfp fc
+    res = bbAddInstr' bbfc (FC_ (VoidReg, conditionalJump fr (Et $ bname fs) (Et str)))
     in
     res
   where
-    up' = if null (bname block) then up else bbAddInstr up (LL (bname block))
+    up' = if null (bname block) then up else bbAddInstr' up (LL (bname block))
     convert :: FCInstr -> LLVMInstr
     convert = FC_
+    bbAddInstr' = bbAddInstr env
+    toLLVMBuilder' = toLLVMBuilder env
 
 
 
-llvmBuildBuilder :: FCType -> LLVMBlockBuilder -> [LLVMInstr]
-llvmBuildBuilder rettype bb = let
-  bb' = bbAddInstr bb (dummyReturn rettype)
+llvmBuildBuilder :: LLVMEnv -> FCType -> LLVMBlockBuilder -> [LLVMInstr]
+llvmBuildBuilder env rettype bb = let
+  bb' = bbAddInstr env bb (dummyReturn rettype)
   in
     f bb' []
   where
@@ -100,6 +166,8 @@ instance Outputable FCType where
   output DynamicStringPtr = "i8*"
   output (ConstStringPtr x) = "[" ++ show x ++ " x i8 ]*"
   output Void = "void"
+  output (Class x) = "@"++x
+  output (FCPointer fctype) = output fctype ++ "*"
 
 instance Outputable FCBinaryOperator where
   output x =
@@ -152,7 +220,14 @@ instance Outputable FCRValue where
   output (FCCondJump c1 s f) = "br i1 " ++ output c1 ++ ", label "
     ++ output s ++ ", label " ++ output f
   output (FunCall rtype fname args) = "call " ++ outputFun fname rtype args
-  output _ = error "Instancja Output dla FCRValue niezdefiniowana"
+  output GetField {} = error "This one is internal."
+  output (GetElementPtr ft x fc r) = "getelementptr " ++ output (derefencePointerType fc) ++ ", "
+    ++ output fc ++ " " ++ output r ++ ", i32 0, i32 " ++ show x
+  output (FCLoad ft ft' r) = "load " ++ output ft ++ ", " ++ output ft' ++ " " ++output r
+  output (FCStore ft value ftp ptr) = "store " ++ output ft ++ " " ++ output value ++ ","
+    ++ output ftp ++ " " ++ output ptr
+  output (FCSizeOf f) = error "This one is a macro"
+  -- output _ = error "Instancja Output dla FCRValue niezdefiniowana"
 
 instance Outputable LLVMInstr where
   output (LL s) = s ++ ":"
@@ -180,12 +255,21 @@ instance Outputable LLVMFunDecl where
       outputArgs = foldr (\(ftype, freg) s ->
                         output ftype ++ " " ++ output freg ++ (if null s then "" else ", ") ++ s) ""
 
+instance Outputable LLVMClassDecl where
+  output (LLVMClassDecl _className _ _llFields _ ) =
+    "@" ++ _className ++ " = type {" ++ outputFields _llFields ++ "}"
+    where
+      outputFields :: [FCType] -> String
+      outputFields [] = ""
+      outputFields (x:xs) = output x ++ (if null xs then "" else "," ++ outputFields xs)
+
 instance Outputable LLVMModule where
-  output (LLVMModule exts consts funs) =
+  output (LLVMModule exts consts funs classes) =
     concatMap (\(reg,str)-> outputConstant reg str ++ "\n") consts
     ++ (if null consts then "" else "\n") ++
     concatMap (\(name, (rtype, args))-> outputExternalFunction name rtype args ++ "\n") exts
     ++ (if null consts then "" else "\n") ++
+    concatMap (\x -> output x ++ "\n\n") classes ++
     concatMap (\x -> output x ++ "\n\n") funs
     where
     outputExternalFunction :: String -> FCType -> [FCType] -> String
@@ -213,8 +297,10 @@ instance Outputable LLVMModule where
 
 compile :: FCProg -> String
 compile (FCProg exts consts funs classes) =
-  output (LLVMModule exts consts (map f funs))
+  output (LLVMModule exts consts (map f funs) llvmClasses)
   where
+    (llvmStructEnv, llvmClasses) = toLLVMStructs classes
+    llvmEnv = llvmStructEnv
     f :: FCFun -> LLVMFunDecl
     f (FCFun' fname ftype args iblock) = LLVMFunDecl fname ftype args
-      (llvmBuildBuilder ftype $ toLLVMBuilder [] iblock)
+      (llvmBuildBuilder llvmEnv ftype $ toLLVMBuilder llvmEnv [] iblock)

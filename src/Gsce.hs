@@ -72,7 +72,10 @@ isRValueDynamic env fcr = case fcr of
   FCCondJump fr fr' fr2 -> True
   GetField ft s ft' fr -> isRegisterDynamic' fr
   FCLoad ft ft' fr -> isRegisterDynamic' fr
-  FCStore ft fr ft' fr' -> any isRegisterDynamic' [fr, fr']
+  FCStore ft fr ft' fr' -> True
+    -- any isRegisterDynamic' [fr, fr'] --
+  GetElementPtr {} -> True
+  FCSizeOf _ -> False
   where
     isFunDynamic' = isFunDynamic env
     isRegisterDynamic' = isRegisterDynamic env
@@ -122,6 +125,8 @@ substituteRegisters substitution fcrvalue = case fcrvalue of
   GetField ft s ft' fr -> GetField ft s ft' (subst fr)
   FCLoad ft ft' fr -> FCLoad ft ft' (subst fr)
   FCStore ft fr ft' fr' -> FCStore ft (subst fr) ft' (subst fr')
+  GetElementPtr ft x ft' fr' -> GetElementPtr ft x ft' (subst fr')
+  FCSizeOf _ -> fcrvalue
   where
     subst :: FCRegister -> FCRegister
     subst reg = reg `fromMaybe` DM.lookup reg  substitution

@@ -69,6 +69,8 @@ getVars set fcrvalue = case fcrvalue of
   GetField ft s ft' fr -> insertReg set fr
   FCLoad ft ft' fr -> insertReg set fr
   FCStore ft fr ft' fr' -> foldl' insertReg set [fr, fr']
+  FCSizeOf ft -> set
+  GetElementPtr _ x _ fr -> insertReg set fr
 
 getNewDynamicVars :: DynamicFunctions -> (DS.Set FCRegister, DS.Set FCRegister) -> FCBlock
       -> (DS.Set FCRegister, DS.Set FCRegister)

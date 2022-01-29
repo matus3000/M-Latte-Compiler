@@ -15,6 +15,12 @@ declare i32 @scanf(i8*, ...)
 declare void @exit(i32)
 
 
+define i8* @_new(i32 %0) {
+  %r1 = sext i32 %0 to i64
+  %r2 = call i8* @malloc(i64 %r1)
+  ret i8* %r2
+}
+
 define i8* @_strconcat(i8* %r0, i8* %r1) {
   %r2 = call i64 @strlen(i8* %r0) 
   %r3 = call i64 @strlen(i8* %r1)

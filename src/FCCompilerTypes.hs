@@ -95,6 +95,7 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCCondJump FCRegister FCRegister FCRegister |
                 GetField FCType String FCType FCRegister |
                 GetElementPtr FCType Int FCType FCRegister |
+                GetElementPtrArr FCType Int FCType FCRegister |
                 FCLoad FCType FCType FCRegister |
                 FCStore FCType FCRegister FCType FCRegister |
                 FCSizeOf FCType 

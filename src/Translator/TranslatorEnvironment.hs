@@ -12,8 +12,10 @@ module Translator.TranslatorEnvironment(FunctionData,
                                         hasField,
                                         fieldType,
                                         lookupClass,
+                                        isSubClass,
                                         getClassEnv,
-                                        getContext) where
+                                        getContext,
+                                        initialEnvironment) where
 
 import Translator.Definitions
 import IDefinition
@@ -47,9 +49,32 @@ data StructureEnvironment = StructureEnvironment {
   classMap :: StructureDataMap,
   inheritanceInfo :: InheritenceHierarchy
   }
+
+instance Show StructureEnvironment where
+  show senv = show $ DM.toList (classMap senv)
+
+instance Show StructureData where
+  show sd = (show $ fields sd) ++ "," ++ (show $ definedFields sd)
+
 type FunctionContext = (LType, String, (Int, Int))
 
 type TranslationEnvironment = (FunctionEnvironment, StructureEnvironment, FunctionContext)
+
+initialEnvironment :: FunctionEnvironment
+initialEnvironment = DM.fromList [("printInt", (LVoid, [LInt])),
+                                      ("printString", (LVoid, [LString])),
+                                     ("error", (LVoid, [])),
+                                     ("readInt", (LInt, [])),
+                                     ("readString", (LString, [])),
+                                     ("_strconcat", (LString, [LString, LString])),
+                                     ("_strle", (LBool, [LString, LString])),
+                                     ("_strlt", (LBool, [LString, LString])),
+                                     ("_strge", (LBool, [LString, LString])),
+                                     ("_strgt", (LBool, [LString, LString])),
+                                     ("_streq", (LBool, [LString, LString])),
+                                     ("_strneq", (LBool, [LString, LString])),
+                                     ("_new", (LClass "" ,[LInt]))]
+
 
 getFunEnv :: TranslationEnvironment -> FunctionEnvironment
 getFunEnv (x, y, z) = x
@@ -62,6 +87,17 @@ lookupClass :: String -> TranslationEnvironment -> Maybe StructureData
 lookupClass className te = DM.lookup className $ (classMap . getClassEnv) te
 
 type StateStrMap x = State (DM.Map String x)
+
+isSubClass ::  LType -> LType -> TranslationEnvironment -> Bool
+isSubClass x y (_, se,_ ) = seIsSubclass x y se
+seIsSubclass :: LType -> LType -> StructureEnvironment -> Bool
+seIsSubclass type1 type2 se= case (type1, type2) of
+  (LClass sub, LClass c) -> let
+    noAncestors = Prelude.error $ "Not even an empty list of ancestors for class: " ++ sub
+    ancestors = fromMaybe noAncestors $ DM.lookup sub (ihAncestors $ inheritanceInfo se)
+    in
+    DL.elem c ancestors
+  _ -> False
 
 sdHasField :: String -> StructureData -> Bool
 sdHasField fieldName sd = case sdFieldType fieldName sd of
@@ -164,19 +200,6 @@ getFunctionEnvironment (Program _ topDef structDef) =
                           return $ do
                               fd <- getFunctionData topDef;
                               DM.insert topName fd <$> fe)
-    initialEnvironment :: FunctionEnvironment
-    initialEnvironment = DM.fromList [("printInt", (LVoid, [LInt])),
-                                      ("printString", (LVoid, [LString])),
-                                     ("error", (LVoid, [])),
-                                     ("readInt", (LInt, [])),
-                                     ("readString", (LString, [])),
-                                     ("_strconcat", (LString, [LString, LString])),
-                                     ("_strle", (LBool, [LString, LString])),
-                                     ("_strlt", (LBool, [LString, LString])),
-                                     ("_strge", (LBool, [LString, LString])),
-                                     ("_strgt", (LBool, [LString, LString])),
-                                     ("_streq", (LBool, [LString, LString])),
-                                     ("_strneq", (LBool, [LString, LString]))]
     result = Prelude.foldl (flip checkFunction) (return $ return initialEnvironment) topDef
   in
     evalState result DM.empty
@@ -192,16 +215,26 @@ classParsingPhase1 = foldlM
           return (DS.insert sName set)))
           DS.empty
 
-data InheritenceHierarchy = InheritenceHierarchy {ihChildren :: DM.Map String [String],
-                                                 ihDescendants :: DM.Map String [String],
-                                                 ihAncestors :: DM.Map String [String],
-                                                 ihBaseClasses :: DS.Set String}
+data InheritenceHierarchy = InheritenceHierarchy {
+  ihChildren :: DM.Map String [String],
+  ihDescendants :: DM.Map String [String],
+  ihAncestors :: DM.Map String [String],
+  ihBaseClasses :: DS.Set String }
+
 
 ihAddBaseClass :: String -> InheritenceHierarchy -> InheritenceHierarchy
 ihAddBaseClass string (InheritenceHierarchy ihc ihd iha ibc) =  InheritenceHierarchy (DM.insert string [] ihc)
   (DM.insert string [] ihd) (DM.insert string [] iha) (DS.insert string ibc)
 ihAddClassInheritence :: String -> String -> InheritenceHierarchy -> InheritenceHierarchy
-ihAddClassInheritence className parentName ih = undefined
+ihAddClassInheritence className parentName ih = let
+  noAncestors = Prelude.error $ "Not even an empty list of ancestors for parentclass: " ++ parentName
+  ancestors = parentName : noAncestors `fromMaybe` DM.lookup parentName (ihAncestors ih)
+  in
+  InheritenceHierarchy { ihChildren=ihChildren ih,
+                         ihDescendants=ihDescendants ih,
+                         ihAncestors=DM.insert className ancestors (ihAncestors ih),
+                         ihBaseClasses=ihBaseClasses ih}
+
 ihIsAncestor :: String -> String -> InheritenceHierarchy -> Bool
 ihIsAncestor potentialAncestor className ih =
   let
@@ -240,8 +273,9 @@ classParsingPhase3 ih defs = runReaderT (foldM f (DM.empty) defs) ih
       let (className, parent, cmds) =case classdef of
             ClassDef ma (Ident id) cmds -> (id, Nothing, cmds)
             ClassDefExtends ma (Ident id) (Ident parentName) cmds -> (id, Just parentName, cmds)
-      (inherited, defined, fields) <- foldlM buildField (initFields, [], []) cmds
-      return (DM.insert className (StructureData fields parent defined inherited DM.empty DM.empty) se)
+      (inherited, rdefined) <- foldlM buildField (initFields, []) cmds
+      let defined = reverse rdefined
+      return (DM.insert className (StructureData (inherited ++ defined) parent defined inherited DM.empty DM.empty) se)
     _convertType :: Type -> (ReaderT InheritenceHierarchy CompilerExcept) LType
     _convertType ptype = do
       let converted = convertType ptype
@@ -254,24 +288,25 @@ classParsingPhase3 ih defs = runReaderT (foldM f (DM.empty) defs) ih
           unless (issubclass || isbaseclass) (throwError (SemanticError pos $ UndefinedClass pos s))
         _ -> return ()
       return converted
-    buildField :: ([(String, LType)], [(String, LType)], [(String, LType)]) -> ClassMemberDef
+    buildField :: ([(String, LType)], [(String, LType)]) -> ClassMemberDef
       -> (ReaderT InheritenceHierarchy CompilerExcept)
-      ([(String, LType)], [(String, LType)], [(String, LType)])
+      ([(String, LType)], [(String, LType)])
     buildField result = \case
       FieldDecl ma ty fdis -> do
         ltype <- _convertType ty
-        foldM (f ltype) result fdis
+        (l1, l2)<- foldM (f ltype) result fdis
+        return (l1, l2)
       where
-        f :: LType -> ([(String, LType)], [(String, LType)], [(String, LType)])
+        f :: LType -> ([(String, LType)], [(String, LType)])
           -> FieldDeclItem
           -> (ReaderT InheritenceHierarchy CompilerExcept)
-          ([(String, LType)], [(String, LType)], [(String, LType)])
-        f ltype res@(inh, def, sum) = \case
+          ([(String, LType)], [(String, LType)])
+        f ltype res@(inh, def) = \case
           FieldDeclItem ma (Ident id) -> do
-            if isJust $ DL.lookup id sum
+            if isJust (DL.lookup id def) || isJust (DL.lookup id inh)
               then throwError $
                      SemanticError (fromJust ma) (RedefinitionOfField (fromJust ma) id)
-              else return (inh, (id, ltype):def, (id, ltype):sum)
+              else return (inh, (id, ltype):def)
 
 getStructureEnvironment :: Program -> CompilerExcept StructureEnvironment
 getStructureEnvironment (Program _ _ structDefs) = do

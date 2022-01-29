@@ -399,8 +399,11 @@ f (EApp pos (Ident funId) exps) = do
       iArgs <- foldr (\(dType, (iType, iValue, iExpr)) monad ->
                do
                  list <- monad
-                 unless (dType `same` iType) $ throwErrorInContext (TypeConflict errPos dType (cast iType))
-                 return $ iExpr:list
+                 if (dType `same` iType) then return $ iExpr:list
+                   else do
+                   isSub <- asks $ iType `TE.isSubClass` dType
+                   unless (isSub) $ throwErrorInContext (TypeConflict errPos dType (cast iType))
+                   return $ (ICast dType iExpr):list
             )(return []) (zip argTypes tmp)
       unless (length argTypes == length tmp) $ throwErrorInContext (WrongArgumentCount errPos)
       return (lTypeToIType rType, RunTimeValue, IApp funId iArgs)
@@ -855,7 +858,7 @@ getCalledFunctions (IFun _ _ _ iblock) =
       IAdd iao ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
       IMul imo ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
       IRel iro ie' ie2 -> getCalledFunctionExpr ie2 $ getCalledFunctionExpr ie' set
-      INew {} -> DS.insert "new" set
+      INew {} -> DS.insert "_new" set
       INull {} -> set
       ICast {} -> set
     getCalledFunctionsItems :: [IItem] -> DS.Set String ->DS.Set String
@@ -886,43 +889,43 @@ containsPossiblyEndlessLoop (IFun _ _ _ iblock) =
       ISExp ie -> False
       IStmtEmpty -> False
 
-_getNamesOfStateChangingFunctions :: DS.Set String -> [IFun] -> DS.Set String
-_getNamesOfStateChangingFunctions seed ifuns = let
-  x = map (const DS.empty) ifuns
-  y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
+-- _getNamesOfStateChangingFunctions :: DS.Set String -> [IFun] -> DS.Set String
+-- _getNamesOfStateChangingFunctions seed ifuns = let
+--   x = map (const DS.empty) ifuns
+--   y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
 
-  initDepMap = foldl (\map (IFun fname _ _ _) -> DM.insert fname DS.empty map) DM.empty ifuns
-  buildDepMap :: [(String, DS.Set String)] -> DM.Map String (DS.Set String)
-  buildDepMap list = foldr f initDepMap list
-    where
-          f :: (String, DS.Set String) -> DM.Map String (DS.Set String) -> DM.Map String (DS.Set String)
-          f (fname, set) map = foldl (\map pname -> DM.insert
-                                                    pname
-                                                    (DS.insert fname (DS.empty `fromMaybe`DM.lookup pname map)) map)
-                               map set
-  loopingFunctions = foldl' (\set ifun@(IFun fname _ _ _) ->
-                                   if containsPossiblyEndlessLoop ifun
-                                   then DS.insert fname set
-                                   else set) DS.empty ifuns
-  buildDynamic :: DM.Map String (DS.Set String) -> DS.Set String -> DS.Set String -> DS.Set String
-  buildDynamic map emplaced set = if null emplaced then set else
-    let  emplaced' = foldl (\emplaced' name ->
-                                  DS.union emplaced'
-                                  (DS.difference (DS.empty `fromMaybe` DM.lookup name map) set))
-                         DS.empty emplaced
-    in
-      buildDynamic map emplaced' (DS.union emplaced' set)
-  _depMap = buildDepMap y
-  _externalDyn = ["printInt", "printString", "error", "readInt", "readString"]
-  _externalFun = ["printInt", "printString", "error", "readInt", "readString",
-                      "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
-                      "_strneq"]
-  _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
-  _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
-  _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
-                          foldl (\set pair -> set `DS.union` snd pair) DS.empty y
-  in
-    _dynamicFunctions
+--   initDepMap = foldl (\map (IFun fname _ _ _) -> DM.insert fname DS.empty map) DM.empty ifuns
+--   buildDepMap :: [(String, DS.Set String)] -> DM.Map String (DS.Set String)
+--   buildDepMap list = foldr f initDepMap list
+--     where
+--           f :: (String, DS.Set String) -> DM.Map String (DS.Set String) -> DM.Map String (DS.Set String)
+--           f (fname, set) map = foldl (\map pname -> DM.insert
+--                                                     pname
+--                                                     (DS.insert fname (DS.empty `fromMaybe`DM.lookup pname map)) map)
+--                                map set
+--   loopingFunctions = foldl' (\set ifun@(IFun fname _ _ _) ->
+--                                    if containsPossiblyEndlessLoop ifun
+--                                    then DS.insert fname set
+--                                    else set) DS.empty ifuns
+--   buildDynamic :: DM.Map String (DS.Set String) -> DS.Set String -> DS.Set String -> DS.Set String
+--   buildDynamic map emplaced set = if null emplaced then set else
+--     let  emplaced' = foldl (\emplaced' name ->
+--                                   DS.union emplaced'
+--                                   (DS.difference (DS.empty `fromMaybe` DM.lookup name map) set))
+--                          DS.empty emplaced
+--     in
+--       buildDynamic map emplaced' (DS.union emplaced' set)
+--   _depMap = buildDepMap y
+--   _externalDyn = ["printInt", "printString", "error", "readInt", "readString"]
+--   _externalFun = ["printInt", "printString", "error", "readInt", "readString",
+--                    "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
+--                    "_strneq", "_new"]
+--   _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
+--   _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
+--   _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
+--                           foldl (\set pair -> set `DS.union` snd pair) DS.empty y
+--   in
+--     _dynamicFunctions
 
 
 functionMetaDataNew :: [IFun] -> FunctionMetadata
@@ -955,7 +958,7 @@ functionMetaDataNew ifuns =
       _externalDyn = ["printInt", "printString", "error", "readInt", "readString"]
       _externalFun = ["printInt", "printString", "error", "readInt", "readString",
                       "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
-                      "_strneq"]
+                      "_strneq", "_new"]
       _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
       _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
       _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
@@ -967,8 +970,12 @@ functionMetaDataNew ifuns =
                                                       LArray lt -> True
                                                       LClass s -> True
                                                       _ -> False) args)):result) [] ifuns)
+      _mutargs' = DS.foldl (\_map name -> let
+                               (_, x) = fromJust $ DM.lookup name TE.initialEnvironment
+                               in
+                               DM.insert name (map (const False) x) _map) _mutargs _somehowCalledFun
   in
-    FM _somehowCalledFun _dynamicFunctions _mutargs
+    FM _somehowCalledFun _dynamicFunctions _mutargs'
 
 data FunctionMetadata = FM {usedExternal :: DS.Set String,
                             dynamicFunctions :: DS.Set String,

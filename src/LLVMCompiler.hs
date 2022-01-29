@@ -18,7 +18,10 @@ import Data.Char (ord)
 import System.Process (CreateProcess(env))
 
 type ExternalImport = (String, (FCType, [FCType]))
-data LLVMInstr = FC_ FCInstr | LL String
+data LLVMInstr = FC_ FCInstr | LL String | LLInstr (FCRegister, LLVMInternalInstr)
+
+data LLVMInternalInstr = PtrToInt FCType FCRegister
+
 data LLVMFunDecl = LLVMFunDecl String FCType [(FCType, FCRegister)] [LLVMInstr]
 
 data LLVMClassDecl = LLVMClassDecl {llClassName :: String,
@@ -48,6 +51,8 @@ changesFlow x = case x of
     FCCondJump {} -> True
     _ -> False
   LL s -> False
+  LLInstr (fr, fv) -> case fv of
+     PtrToInt ft fr' -> False
 
 
 type LLVMClassEnv = DM.Map String LLVMClassDecl
@@ -82,9 +87,11 @@ toLLVMStructs fcclasses = (\res -> (DM.fromList (map (\x -> (llClassName x, x)) 
         Nothing -> (DM.empty, [], 0)
         Just lcd -> (llFieldsMap lcd, llFields lcd, llNextId lcd)
       -- fieldMapper :: (DM.Map String Int, [FCType], Int) ->
-      (_llFieldsMap, _llFields, _llNextId) = (\(x,y,z) -> (x,reverse y,z)) $ foldl
+      (_llFieldsMap, _llFields, _llNextId) = (\(x,y,z) -> (x, inheritedFields ++ reverse y,z)) $ foldl
         (\(map,res,id) (fname, ftype)->
-            (DM.insert fname (id+1) map, ftype:res, id+1)) seed (definedFields fcclass)
+            -- (DM.insert fname id map, (Class fname):res, id+1))
+            (DM.insert fname id map, ftype:res, id+1))
+        (inheritedMap, [], inheritedIndex) (definedFields fcclass)
       in
       LLVMClassDecl name _llFieldsMap _llFields _llNextId:res
 
@@ -99,8 +106,19 @@ bbAddInstr env bb linstr = case linstr of
         index = llEnvFieldMapping className s env
       in
         FC_ (reg, GetElementPtr ft index ft' fr):bb
+    FCSizeOf fctype ->
+      let
+        _reg = Reg $ case reg of
+          Reg s -> "_" ++ s
+          _ -> undefined
+        sizeofTrick = FC_ (_reg, GetElementPtrArr (FCPointer fctype) 1 (FCPointer fctype) (FCNull fctype))
+        bb' = sizeofTrick : bb
+        bb'' = LLInstr (reg, PtrToInt (FCPointer fctype) _reg) : bb'
+        in
+        bb''
     _ -> linstr : bb
   LL s -> linstr : bb
+  LLInstr {} -> linstr : bb
 
 toLLVMBuilder :: LLVMEnv -> LLVMBlockBuilder -> FCBlock -> LLVMBlockBuilder
 toLLVMBuilder env up block = case block of
@@ -166,7 +184,8 @@ instance Outputable FCType where
   output DynamicStringPtr = "i8*"
   output (ConstStringPtr x) = "[" ++ show x ++ " x i8 ]*"
   output Void = "void"
-  output (Class x) = "@"++x
+  output (Class x) = "%"++x
+  output (FCPointer (Class "")) = "i8*"
   output (FCPointer fctype) = output fctype ++ "*"
 
 instance Outputable FCBinaryOperator where
@@ -205,7 +224,7 @@ instance Outputable FCRValue where
   output (FCUnOp ftype fuop r1) = case fuop of
     Neg -> "sub " ++ output ftype ++ " 0, " ++ output r1
     BoolNeg -> error "Instancja Show dla FCRValue(BoolNeg) niezdefiniowana"
-  output (BitCast ftf r ftt) = "bitcast " ++ output ftf ++ " " ++ output r ++ " to " ++ output ftt
+  output (BitCast ftf ftt r) = "bitcast " ++ output ftt ++ " " ++ output r ++ " to " ++ output ftf
   output (FCPhi _ []) = error "Malformed (empty) PHI"
   output (FCPhi x list) = "phi " ++ output x ++ " " ++
     foldr (\(rvalue, rfrom) rest ->
@@ -223,11 +242,18 @@ instance Outputable FCRValue where
   output GetField {} = error "This one is internal."
   output (GetElementPtr ft x fc r) = "getelementptr " ++ output (derefencePointerType fc) ++ ", "
     ++ output fc ++ " " ++ output r ++ ", i32 0, i32 " ++ show x
+  output (GetElementPtrArr ft x ft' reg) = "getelementptr " ++ output (derefencePointerType ft) ++ ", "
+    ++ output ft' ++ " " ++ output reg ++ ", i32 " ++ show x
   output (FCLoad ft ft' r) = "load " ++ output ft ++ ", " ++ output ft' ++ " " ++output r
   output (FCStore ft value ftp ptr) = "store " ++ output ft ++ " " ++ output value ++ ","
     ++ output ftp ++ " " ++ output ptr
   output (FCSizeOf f) = error "This one is a macro"
+  output FCEmptyExpr = ""
   -- output _ = error "Instancja Output dla FCRValue niezdefiniowana"
+
+instance Outputable LLVMInternalInstr where
+  output x = case x of
+     PtrToInt ft fr -> "ptrtoint " ++ output ft ++ " " ++ output fr ++" to i32"
 
 instance Outputable LLVMInstr where
   output (LL s) = s ++ ":"
@@ -236,7 +262,11 @@ instance Outputable LLVMInstr where
       left = case reg of
         VoidReg -> ""
         reg -> output reg ++ " = "
-
+  output (LLInstr (reg, rval)) = left ++ output rval
+    where
+      left = case reg of
+        VoidReg -> ""
+        reg -> output reg ++ " = "
 
 outputFun :: String -> FCType -> [(FCType, FCRegister)] -> String
 outputFun name rt args = output rt ++ " @" ++ name ++ "(" ++ outputArgs args ++ ")"
@@ -257,7 +287,7 @@ instance Outputable LLVMFunDecl where
 
 instance Outputable LLVMClassDecl where
   output (LLVMClassDecl _className _ _llFields _ ) =
-    "@" ++ _className ++ " = type {" ++ outputFields _llFields ++ "}"
+    "%" ++ _className ++ " = type {" ++ outputFields _llFields ++ "}"
     where
       outputFields :: [FCType] -> String
       outputFields [] = ""
@@ -285,14 +315,14 @@ instance Outputable LLVMModule where
       where
         escapecharacter :: Char -> [Char]
         escapecharacter c
-          | (ord c) < 15 = "\\0" ++ showHex (ord c) ""
-          | (ord c) < 31 = "\\" ++ showHex (ord c) ""
+          | ord c < 15 = "\\0" ++ showHex (ord c) ""
+          | ord c < 31 = "\\" ++ showHex (ord c) ""
           | c == '\'' || c =='\"' = "\\" ++ showHex (ord c) ""
-          | (ord c) == 127 = "\\"  ++ showHex (ord c) ""
+          | ord c == 127 = "\\"  ++ showHex (ord c) ""
           | otherwise  = [c]
         escapestring :: String -> [Char]
         escapestring s = foldr (\c res -> escapecharacter c ++ res) "" s
-        str' = (escapestring str) ++ "\\00"
+        str' = escapestring str ++ "\\00"
     outputConstant _ _ = undefined
 
 compile :: FCProg -> String

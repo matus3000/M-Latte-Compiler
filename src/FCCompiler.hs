@@ -59,7 +59,8 @@ externalFunctions = [("printString", (Void, [DynamicStringPtr])),
                       ("_strge", (Bool, [DynamicStringPtr, DynamicStringPtr])),
                       ("_strgt", (Bool, [DynamicStringPtr, DynamicStringPtr])),
                       ("_streq", (Bool, [DynamicStringPtr, DynamicStringPtr])),
-                      ("_strneq", (Bool, [DynamicStringPtr, DynamicStringPtr]))]
+                      ("_strneq", (Bool, [DynamicStringPtr, DynamicStringPtr])),
+                      ("_new", (FCPointer (Class ""), [Int]))]
 
 data BlockBuilder = BB {instrAcc::[FCInstr], subBlockName:: String,  blockAcc::[FCBlock]}
 
@@ -274,8 +275,7 @@ translateExpr bname bb ie save =
       Tr.ILitBool b -> return (bb, (Bool, LitBool b))
       Tr.IString s -> do
          constEt <- getConstStringReg s
-         (bb',r) <- emplaceFCRValue (BitCast (ConstStringPtr (1 + length s))
-                                           DynamicStringPtr constEt ) bb
+         (bb',r) <- emplaceFCRValue (BitCast DynamicStringPtr  (ConstStringPtr (1 + length s)) constEt ) bb
          return (bb', (DynamicStringPtr, r))
       Tr.ILValue ilvalue -> do
         res@(bb', (ftype, reg))<- translateILValue bb ilvalue save
@@ -335,10 +335,16 @@ translateExpr bname bb ie save =
             sizeInstr = FCSizeOf classType
             sizeType = fCRValueType sizeInstr
         (bb', size) <- emplaceFCRValue sizeInstr bb
-        (bb'', reg) <- emplaceFCRValue (FunCall DynamicStringPtr "new" [(sizeType, size)]) bb'
+        (bb'', reg) <- emplaceFCRValue (FunCall DynamicStringPtr "_new" [(sizeType, size)]) bb'
         (bb''', res) <- emplaceFCRValue (BitCast fctype DynamicStringPtr reg) bb''
         return (bb''', (fctype, res))
-      Tr.ICast ltype iexpr -> undefined
+      Tr.ICast ltype iexpr -> do
+        let
+          fctype :: FCType
+          fctype = convert ltype
+        (bb', (old, r))<- translateExpr' bb iexpr True
+        (bb'', res)<- emplaceFCRValue (BitCast fctype old r) bb'
+        return (bb'', (fctype, res))
   where
     translateExpr' = translateExpr bname
 translateIItem :: String -> Tr.IItem -> BlockBuilder -> FCCompiler BlockBuilder

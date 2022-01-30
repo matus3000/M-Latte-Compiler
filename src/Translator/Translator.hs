@@ -30,7 +30,7 @@ import VariableEnvironment(CVariableEnvironment(..), VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import Data.List (foldl')
 import Data.Foldable (Foldable(toList))
-import Data.Maybe (fromMaybe, fromJust, isNothing)
+import Data.Maybe (fromMaybe, fromJust, isNothing, isJust)
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
 import Data.List as DL (find)
@@ -68,12 +68,18 @@ data TranslatorState = TSRoot {memoryState::MemoryState, varState::VariableState
 
 type Translator = ReaderT TranslationEnvironment (StateT TranslatorState CompilerExcept)
 
+isTranslatingMethod :: Translator  Bool
+isTranslatingMethod = do
+  (_, _, _, ms) <- asks TE.getContext
+  return $ isJust ms
+
 newTranslatorState :: TranslatorState
 newTranslatorState = TSRoot (MemoryState DM.empty DM.empty DM.empty (Allocator 0 0)) VE.newVarEnv
+
 throwErrorInContext :: SemanticErrorType -> Translator a
 throwErrorInContext errtype  =
   do
-    (a,b, pos) <- asks TE.getContext
+    (a,b, pos, _) <- asks TE.getContext
     throwError $ SemanticError pos errtype
 
 modifyMemoryState :: (MemoryState -> MemoryState) -> Translator ()
@@ -204,5 +210,4 @@ withinConditionalBlock f = do
 
 evalTranslator :: TranslationEnvironment -> TranslatorState -> Translator a -> CompilerExcept a
 evalTranslator te ts = flip evalStateT ts . flip runReaderT te
--- setVariables :: [((Int,Int), String, IValue)] -> Translator ()
--- setVariables = undefined
+

@@ -93,6 +93,8 @@ ENull.     Expr6 ::= "null";
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
 
+EMethod.    Expr6 ::= LValue "." Ident "(" [Expr] ")";
+
 EString.   Expr6 ::= String ;
 
 ENewArray. Expr6 ::= "new" Type "[" Expr "]";

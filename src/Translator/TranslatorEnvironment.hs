@@ -28,7 +28,7 @@ import Control.Monad.State.Strict
 import Control.Monad.Except
 import Data.Maybe (fromMaybe, isNothing, isJust, fromJust)
 import Data.Foldable (foldlM)
-import Latte.Abs (ClassMemberDef' (FieldDecl), ClassMemberDef, FieldDeclItem' (FieldDeclItem),
+import Latte.Abs (FieldDeclItem' (FieldDeclItem),
                   FieldDeclItem)
 import Control.Monad.Reader
 import Class (Class(className))
@@ -54,9 +54,9 @@ instance Show StructureEnvironment where
   show senv = show $ DM.toList (classMap senv)
 
 instance Show StructureData where
-  show sd = (show $ fields sd) ++ "," ++ (show $ definedFields sd)
+  show sd = show (fields sd) ++ "," ++ show (definedFields sd)
 
-type FunctionContext = (LType, String, (Int, Int))
+type FunctionContext = (LType, String, (Int, Int), Maybe String)
 
 type TranslationEnvironment = (FunctionEnvironment, StructureEnvironment, FunctionContext)
 
@@ -240,7 +240,7 @@ ihIsAncestor potentialAncestor className ih =
   let
     x = (potentialAncestor `DL.elem`) <$> DM.lookup className (ihAncestors ih)
   in
-    False `fromMaybe` x
+    Just True == x
 
 classParsingPhase2 :: DS.Set String -> [ClassDef] -> CompilerExcept InheritenceHierarchy
 classParsingPhase2 set defs = runReaderT (classParsingPhase2' defs) set
@@ -250,32 +250,58 @@ classParsingPhase2 set defs = runReaderT (classParsingPhase2' defs) set
       where
         f :: InheritenceHierarchy -> ClassDef -> (ReaderT (DS.Set String) CompilerExcept) InheritenceHierarchy
         f ih x = case x of
-          ClassDef ma (Ident id) cmds -> return $ ihAddBaseClass id ih
-          ClassDefExtends ma (Ident className) (Ident parentName) cmds -> do
+          ClassDef ma (Ident id) cmds methods-> return $ ihAddBaseClass id ih
+          ClassDefExtends ma (Ident className) (Ident parentName) cmds methods -> do
             realClass <- asks $ DS.member parentName
-            unless (realClass) (throwError (SemanticError
+            unless realClass (throwError (SemanticError
                                              (fromJust ma)
                                              (SuperclassNonexisting className parentName)))
             when (ihIsAncestor className parentName ih) (throwError (SemanticError
                                                                      (fromJust ma)
-                                                                     (CircularInheritence)))
+                                                                     CircularInheritence))
             return $ ihAddClassInheritence className parentName ih
 
 classParsingPhase3 :: InheritenceHierarchy -> [ClassDef] -> CompilerExcept StructureDataMap
-classParsingPhase3 ih defs = runReaderT (foldM f (DM.empty) defs) ih
+classParsingPhase3 ih defs = runReaderT (foldM f DM.empty defs) ih
   where
     f :: StructureDataMap -> ClassDef ->
          (ReaderT InheritenceHierarchy CompilerExcept) StructureDataMap
     f se classdef = do
-      initFields <- case classdef of
-                      ClassDef ma id cmds -> return []
-                      ClassDefExtends ma id (Ident parent) cmds -> return (fields $ fromJust (DM.lookup parent se))
-      let (className, parent, cmds) =case classdef of
-            ClassDef ma (Ident id) cmds -> (id, Nothing, cmds)
-            ClassDefExtends ma (Ident id) (Ident parentName) cmds -> (id, Just parentName, cmds)
+      (initFields, inheritedMethods, methodToDeclaration) <- case classdef of
+                      ClassDef {} -> return ([], DM.empty, DM.empty)
+                      ClassDefExtends _ _ (Ident parent) _  _ ->
+                        let
+                          parentSD = fromJust (DM.lookup parent se)
+                          in
+                          return (fields parentSD, methods parentSD, methodsParents parentSD)
+      let (className, parent, cmds, _methods) =case classdef of
+            ClassDef ma (Ident id) cmds methods -> (id, Nothing, cmds, methods)
+            ClassDefExtends ma (Ident id) (Ident parentName) cmds methods -> (id, Just parentName, cmds, methods)
+
+
+      -- Now we parse methods --
+      (_methods, _parentsMethods, _) <- foldlM
+        (\(mMap, declMap, alreadyDeclared) method -> do
+            let MethodDecl ma ty (Ident id) ars eb = method
+            case DM.lookup id mMap of
+              Nothing -> return (DM.insert id (convertType ty, map (\(Arg _ t _) -> convertType t) ars) mMap,
+                                 DM.insert id className declMap,
+                                 DS.insert id alreadyDeclared)
+              Just (ty', ars') -> if DS.member id alreadyDeclared then Prelude.error "WIP-Redefinicja metody"
+                else do
+                unless (ty' `same` convertType ty) $ throwError undefined
+                mapM_ (\(x,y)-> unless (x `same` (\(Arg _ t _) -> convertType t) y) (throwError undefined)) (zip ars' ars)
+                return (mMap, declMap, DS.insert id alreadyDeclared)
+            )
+        (inheritedMethods, methodToDeclaration, DS.empty) _methods
+      -- --
+
+
       (inherited, rdefined) <- foldlM buildField (initFields, []) cmds
       let defined = reverse rdefined
-      return (DM.insert className (StructureData (inherited ++ defined) parent defined inherited DM.empty DM.empty) se)
+
+
+      return (DM.insert className (StructureData (inherited ++ defined) parent defined inherited _methods _parentsMethods) se)
     _convertType :: Type -> (ReaderT InheritenceHierarchy CompilerExcept) LType
     _convertType ptype = do
       let converted = convertType ptype

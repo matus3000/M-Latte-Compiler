@@ -9,7 +9,8 @@ ClassDef.          TopDef ::= "class" Ident "{" [ClassMemberDef] "}";
 ClassDefExtends.   TopDef ::= "class" Ident "extends" Ident "{" [ClassMemberDef] "}";
 separator nonempty TopDef "" ;
 
-FieldDecl.  ClassMemberDef ::= Type [FieldDeclItem] ";";
+FieldDecl.   ClassMemberDef ::= Type [FieldDeclItem] ";";
+MemthodDecl. ClassMemberDef ::= Type Ident "(" [Arg] ")" Block;
 separator nonempty ClassMemberDef "";
 
 FieldDeclItem. FieldDeclItem ::= Ident;

@@ -97,6 +97,7 @@ ListTopDef
 ClassMemberDef :: { (Latte.Abs.BNFC'Position, Latte.Abs.ClassMemberDef) }
 ClassMemberDef
   : Type ListFieldDeclItem ';' { (fst $1, Latte.Abs.FieldDecl (fst $1) (snd $1) (snd $2)) }
+  | Type Ident '(' ListArg ')' Block { (fst $1, Latte.Abs.MemthodDecl (fst $1) (snd $1) (snd $2) (snd $4) (snd $6)) }
 
 ListClassMemberDef :: { (Latte.Abs.BNFC'Position, [Latte.Abs.ClassMemberDef]) }
 ListClassMemberDef

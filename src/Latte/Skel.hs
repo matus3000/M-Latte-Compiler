@@ -32,6 +32,7 @@ transTopDef x = case x of
 transClassMemberDef :: Show a => Latte.Abs.ClassMemberDef' a -> Result
 transClassMemberDef x = case x of
   Latte.Abs.FieldDecl _ type_ fielddeclitems -> failure x
+  Latte.Abs.MemthodDecl _ type_ ident args block -> failure x
 
 transFieldDeclItem :: Show a => Latte.Abs.FieldDeclItem' a -> Result
 transFieldDeclItem x = case x of

@@ -43,6 +43,10 @@ module IDefinition (LType(..),
                     getPosition,
                     TypeClass(..),
                     HasPosition(..),
+                    ClassMethodDef,
+                    ClassMethodDef'(..),
+                    ClassMemberDef,
+                    ClassMemberDef'(..),
                     preprocessProgram
                    ) where
 
@@ -67,7 +71,7 @@ import Latte.Abs
       BNFC'Position(..),
       Expr,
       LValue,
-      Expr'(..), LValue' (LVarMem, LVar, LVarArr), ClassMemberDef')
+      Expr'(..), LValue' (LVarMem, LVar, LVarArr))
 import qualified Latte.Abs as Lt
 import Data.Maybe (fromMaybe, isJust, fromJust, catMaybes)
 import Data.Maybe (mapMaybe)
@@ -75,6 +79,10 @@ import Data.Ord
 import qualified Control.Arrow as Data.BiFunctor
 import qualified Data.Bifunctor
 import qualified Data.List as DL
+import qualified Class as LT
+
+import Control.Monad.State.Strict
+import qualified Control.Arrow
 
 data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType | LClass String |
   LGenericClass String [LType]
@@ -128,8 +136,14 @@ type TopDef = EnrichedTopDef' BNFC'Position
 data EnrichedTopDef' a = FnDef a (Type' a) Ident [Arg' a] (EnrichedBlock' a)
 
 type ClassDef = EnrichedClassDef' BNFC'Position
-data EnrichedClassDef' a = ClassDef a Ident [ClassMemberDef' a] |
-  ClassDefExtends a Ident Ident [ClassMemberDef' a]
+data EnrichedClassDef' a = ClassDef a Ident [ClassMemberDef' a] [ClassMethodDef' a] |
+  ClassDefExtends a Ident Ident [ClassMemberDef' a] [ClassMethodDef' a]
+
+type ClassMemberDef = ClassMemberDef' BNFC'Position
+data ClassMemberDef' a = FieldDecl a (Type' a) [Lt.FieldDeclItem' a]
+
+type ClassMethodDef = ClassMethodDef' BNFC'Position
+data ClassMethodDef' a = MethodDecl a (Lt.Type' a) Ident [Lt.Arg' a] (EnrichedBlock' a)
 
 type Block = EnrichedBlock' BNFC'Position
 data EnrichedBlock' a = Block a [EnrichedStmt' a] |
@@ -150,6 +164,89 @@ data EnrichedStmt' a
     | While a (Expr' a) (EnrichedStmt' a) ModifiedLValues
     | SExp a (Expr' a)
 
+type DeclaredVars = DS.Set String
+addThisEverywhere :: DeclaredVars -> Lt.Block -> Lt.Block
+addThisEverywhere decl (Lt.Block ma sts)= Lt.Block ma sts'
+  where
+    sts' = reverse . snd $
+      foldl (\(decl,list) stmt ->
+                Control.Arrow.second (:list) (f decl stmt))
+      (decl, []) sts
+    f :: DeclaredVars -> Lt.Stmt -> (DeclaredVars, Lt.Stmt)
+    f decl s = case s of
+      Lt.Empty ma' -> (decl, s)
+      Lt.BStmt ma' bl -> (decl, Lt.BStmt ma' bl')
+        where
+          bl' = addThisEverywhere decl bl
+      Lt.Decl ma' ty its -> (decl', Lt.Decl ma' ty its')
+        where
+          (decl', its') = Control.Arrow.second reverse $
+               foldl (\(decl, its) it -> Control.Arrow.second (:its) (getDeclared decl it)) (decl, []) its
+      Lt.Ass ma' lv ex -> (decl,  Lt.Ass ma' (h decl lv) (g decl ex))
+      Lt.Incr ma' lv -> (decl, Lt.Incr ma' (h decl lv))
+      Lt.Decr ma' lv -> (decl, Lt.Decr ma' (h decl lv))
+      Lt.Ret ma' ex -> (decl, Lt.Ret ma' (g decl ex))
+      Lt.VRet ma' -> (decl, s)
+      Lt.Cond ma' ex st -> (decl, Lt.Cond ma' (g decl ex) (snd $ f decl st))
+      Lt.CondElse ma' ex st st' -> (decl, Lt.CondElse ma' (g decl ex) (snd $ f decl st) (snd $ f decl st'))
+      Lt.While ma' ex st -> (decl, Lt.While ma' (g decl ex) (snd $ f decl st))
+      Lt.SExp ma' ex -> (decl, Lt.SExp ma' (g decl ex))
+    g :: DeclaredVars -> Lt.Expr -> Lt.Expr
+    g decl expr = case expr of
+      Lt.EVar ma' lv -> Lt.EVar ma' (h' lv)
+      Lt.ELitInt ma' n -> expr
+      Lt.ELitTrue ma' -> expr
+      Lt.ELitFalse ma' -> expr
+      Lt.ENull ma' -> expr
+      Lt.EApp ma' id exs -> Lt.EApp ma' id (map (g decl) exs)
+      Lt.EString ma' s -> expr
+      Lt.ENewArray ma' ty ex -> undefined
+      Lt.ENewClass ma' ty -> expr
+      Lt.Neg ma' ex -> Lt.Neg ma' (g decl ex)
+      Lt.Not ma' ex -> Not ma' (g decl ex)
+      Lt.EMul ma' ex mo ex' -> Lt.EMul ma' (g' ex) mo (g' ex')
+      Lt.EAdd ma' ex ao ex' -> Lt.EAdd ma' (g' ex) ao (g' ex')
+      Lt.ERel ma' ex ro ex' -> Lt.ERel ma' (g' ex) ro (g' ex')
+      Lt.EAnd ma' ex ex' -> Lt.EAnd ma' (g' ex) (g' ex')
+      Lt.EOr ma' ex ex' -> Lt.EOr ma' (g' ex) (g' ex')
+      where
+        g' = g decl
+        h' = h decl
+    h :: DeclaredVars -> Lt.LValue -> Lt.LValue
+    h decl lval = case lval of
+      Lt.LVar ma' (Ident id) -> if DS.member id decl
+        then lval
+        else Lt.LVarMem ma' (Lt.LVar ma' (Ident "this")) (Ident id)
+      Lt.LVarMem ma' lv id -> Lt.LVarMem ma' (h decl lv) id
+      Lt.LVarArr ma' lv ex -> undefined
+    getDeclared :: DeclaredVars -> Item -> (DeclaredVars, Item)
+    getDeclared decl item = case item of
+      NoInit ma' (Ident id) -> (DS.insert id decl, item)
+      Init ma' (Ident id) ex -> (decl', Init ma' (Ident id) (g decl ex))
+        where
+          decl' = DS.insert id decl
+
+preprocessMembers :: [Lt.ClassMemberDef] -> ([ClassMemberDef], [ClassMethodDef])
+preprocessMembers members =  (f members, g members)
+  where
+    f :: [Lt.ClassMemberDef] -> [ClassMemberDef]
+    f x = reverse $ foldl f' [] x
+      where
+        f' :: [ClassMemberDef] -> Lt.ClassMemberDef -> [ClassMemberDef]
+        f' res = \case
+          Lt.FieldDecl ma ty fdis -> FieldDecl ma ty fdis:res
+          Lt.MemthodDecl {} -> res
+    g :: [Lt.ClassMemberDef] -> [ClassMethodDef]
+    g x = reverse $ foldl g' [] x
+      where
+        g' :: [ClassMethodDef] -> Lt.ClassMemberDef -> [ClassMethodDef]
+        g' res = \case
+          Lt.FieldDecl ma ty fdis -> res
+          Lt.MemthodDecl ma ty name args block -> MethodDecl ma ty name args block' : res
+            where
+              initiallyDeclared = DS.fromList $ map getIdStr args
+              (BStmt a block', _, _) = stmtToEnrichedStmt
+                (Lt.BStmt a (addThisEverywhere initiallyDeclared block)) mlbEmpty dlEmpty
 
 preprocessProgram :: Lt.Program -> Program
 preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
@@ -157,12 +254,14 @@ preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
     topdefs' = mapMaybe f topdefs
     classdefs = DL.sortOn classToString $ mapMaybe f' topdefs
     classToString :: ClassDef -> String
-    classToString = \case 
-      ClassDef ma (Ident id) cmds -> "00_" ++ id
-      ClassDefExtends ma (Ident id) (Ident id') cmds -> "01_" ++ id' ++ "_" ++ "id"
+    classToString = \case
+      ClassDef ma (Ident id) cmds _-> "00_" ++ id
+      ClassDefExtends ma (Ident id) (Ident id') cmds _ -> "01_" ++ id' ++ "_" ++ "id"
     f' :: Lt.TopDef -> Maybe ClassDef
-    f' (Lt.ClassDef a id members) = Just $ ClassDef a id members
-    f' (Lt.ClassDefExtends a id id2 members) = Just $ ClassDefExtends a id id2 members
+    f' (Lt.ClassDef a id members) = Just $ uncurry (ClassDef a id)
+      (preprocessMembers members)
+    f' (Lt.ClassDefExtends a id id2 members) = Just $ uncurry (ClassDefExtends a id id2)
+      (preprocessMembers members)
     f' _ = Nothing
     f :: Lt.TopDef -> Maybe TopDef
     f (Lt.FnDef a _type id args block) = Just $ FnDef a _type id args (g block)
@@ -224,7 +323,7 @@ stmtToEnrichedStmt stmt md rd = case stmt of
     where
       (stmt', md', rd') = stmtToEnrichedStmt stmt mlbEmpty dlEmpty
       newmd = mlbUnion md md'
-      newrd = dlUnion rd rd' 
+      newrd = dlUnion rd rd'
   Lt.CondElse a expr stmt1 stmt2 -> (CondElse a expr stmt1' stmt2' (result md'''), newmd, newrd)
     where
       (stmt1', md', rd') = stmtToEnrichedStmt stmt1 mlbEmpty dlEmpty
@@ -279,8 +378,8 @@ instance HasPosition Stmt where
 
 instance HasPosition ClassDef where
   hasPosition = \case
-    ClassDef ma id cmds -> ma
-    ClassDefExtends ma id id' cmds -> ma
+    ClassDef ma id cmds _ -> ma
+    ClassDefExtends ma id id' cmds _ -> ma
 
 
 class Indexed a where
@@ -301,8 +400,8 @@ instance Indexed Lt.TopDef where
 
 instance Indexed (EnrichedClassDef' a) where
     getId = \case
-      ClassDef a id cmds -> id
-      ClassDefExtends a id id' cmds -> id
+      ClassDef a id cmds _ -> id
+      ClassDefExtends a id id' cmds _ -> id
 
 instance Indexed TopDef where
   getId (FnDef _ _ id _ _ ) = id

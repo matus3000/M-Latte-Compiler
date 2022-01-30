@@ -30,7 +30,9 @@ data TopDef' a
   deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
 
 type ClassMemberDef = ClassMemberDef' BNFC'Position
-data ClassMemberDef' a = FieldDecl a (Type' a) [FieldDeclItem' a]
+data ClassMemberDef' a
+    = FieldDecl a (Type' a) [FieldDeclItem' a]
+    | MemthodDecl a (Type' a) Ident [Arg' a] (Block' a)
   deriving (C.Eq, C.Ord, C.Show, C.Read, C.Functor, C.Foldable, C.Traversable)
 
 type FieldDeclItem = FieldDeclItem' BNFC'Position
@@ -146,6 +148,7 @@ instance HasPosition TopDef where
 instance HasPosition ClassMemberDef where
   hasPosition = \case
     FieldDecl p _ _ -> p
+    MemthodDecl p _ _ _ _ -> p
 
 instance HasPosition FieldDeclItem where
   hasPosition = \case

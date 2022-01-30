@@ -1,20 +1,19 @@
 {-# LANGUAGE LambdaCase #-}
-module Translator.Utils where
+module Translator.Utils (preprocessMethodsInClasses) where
 
 import IDefinition
 import Translator.TranslatorEnvironment
+import qualified Data.Set as DS
+import qualified Data.Map.Strict as DM
 
-preprocessMethodsInClasses :: StructureEnvironment -> ClassDef -> ClassDef
+preprocessMethodsInClasses :: DM.Map String FunctionData -> ClassDef -> ClassDef
 preprocessMethodsInClasses senv classdef = let
   cmethods = case classdef of
-    ClassDef ma id cmds cmethods' -> cmethods'
-    ClassDefExtends ma id id' cmds cmdethods' -> cmdethods'
-  cmethods' = map (\x -> undefined) cmethods
+    ClassDef ma id cmds cmethods -> cmethods
+    ClassDefExtends ma id id' cmds cmdethods -> cmdethods
+  cmethods' = map (\(MethodDecl ma ty id args iblock) -> MethodDecl ma ty id args (f iblock)) cmethods
   f :: Block -> Block
   f iblock = let
-    stmts = case iblock of
-      Block ma ess -> ess
-      VirtualBlock ess -> ess
     f' :: Stmt -> Stmt
     f' s = case s of
       Empty ma -> s
@@ -36,7 +35,10 @@ preprocessMethodsInClasses senv classdef = let
       ELitTrue ma -> expr
       ELitFalse ma -> expr
       ENull ma -> expr
-      EApp ma (Ident id) exs -> Prelude.error "Tutaj musi być check"
+      EApp ma (Ident id) exs -> if DM.member id senv
+        then EMethod ma (LVar ma (Ident "this")) (Ident id) (map e exs)
+        else expr
+      EMethod ma lval id exs -> EMethod ma lval id (map e exs)
       EString ma s -> expr
       ENewArray ma ty ex -> expr
       ENewClass ma ty -> expr
@@ -51,7 +53,9 @@ preprocessMethodsInClasses senv classdef = let
     i = \case
       NoInit ma id -> NoInit ma id
       Init ma id ex -> Init ma id (e ex)
-    in
-      undefined
-  in
-  undefined 
+    in case iblock of
+         Block ma ess -> Block ma (map f' ess)
+         VirtualBlock ess -> VirtualBlock (map f' ess)
+  in case classdef of
+       ClassDef ma id cmds cmds' -> ClassDef ma id cmds cmethods'
+       ClassDefExtends ma id id' cmds cmds' -> ClassDefExtends ma id id' cmds cmethods'

@@ -105,7 +105,7 @@ sdHasField fieldName sd = case sdFieldType fieldName sd of
   Nothing -> False
 sdFieldType :: String -> StructureData -> Maybe LType
 sdFieldType fieldName sd = snd <$> DL.find ((fieldName==).fst) (fields sd)
-
+sdHasMethod :: String -> StructureData -> Bool
 hasField :: String -> String -> TranslationEnvironment -> Bool
 hasField  structure field tEnv = isJust $ fieldType structure field tEnv
 fieldType :: String -> String -> TranslationEnvironment -> Maybe LType

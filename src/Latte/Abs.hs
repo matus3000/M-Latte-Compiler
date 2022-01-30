@@ -93,6 +93,7 @@ data Expr' a
     | ELitFalse a
     | ENull a
     | EApp a Ident [Expr' a]
+    | EMethod a (LValue' a) Ident [Expr' a]
     | EString a String
     | ENewArray a (Type' a) (Expr' a)
     | ENewClass a (Type' a)
@@ -206,6 +207,7 @@ instance HasPosition Expr where
     ELitFalse p -> p
     ENull p -> p
     EApp p _ _ -> p
+    EMethod p _ _ _ -> p
     EString p _ -> p
     ENewArray p _ _ -> p
     ENewClass p _ -> p

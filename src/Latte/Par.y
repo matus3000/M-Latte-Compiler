@@ -186,6 +186,7 @@ Expr6
   | 'false' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), Latte.Abs.ELitFalse (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1))) }
   | 'null' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), Latte.Abs.ENull (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1))) }
   | Ident '(' ListExpr ')' { (fst $1, Latte.Abs.EApp (fst $1) (snd $1) (snd $3)) }
+  | LValue '.' Ident '(' ListExpr ')' { (fst $1, Latte.Abs.EMethod (fst $1) (snd $1) (snd $3) (snd $5)) }
   | String { (fst $1, Latte.Abs.EString (fst $1) (snd $1)) }
   | 'new' Type '[' Expr ']' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), Latte.Abs.ENewArray (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1)) (snd $2) (snd $4)) }
   | Expr7 { (fst $1, (snd $1)) }

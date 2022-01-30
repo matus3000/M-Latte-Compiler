@@ -90,6 +90,7 @@ transExpr x = case x of
   Latte.Abs.ELitFalse _ -> failure x
   Latte.Abs.ENull _ -> failure x
   Latte.Abs.EApp _ ident exprs -> failure x
+  Latte.Abs.EMethod _ lvalue ident exprs -> failure x
   Latte.Abs.EString _ string -> failure x
   Latte.Abs.ENewArray _ type_ expr -> failure x
   Latte.Abs.ENewClass _ type_ -> failure x

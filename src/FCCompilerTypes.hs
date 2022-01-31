@@ -44,8 +44,8 @@ data FCUnaryOperator = Neg | BoolNeg
   deriving (Eq, Ord)
 
 
-data FCType = Int | Bool | DynamicStringPtr | Void | ConstStringPtr Int | Class String | FCPointer FCType |
-  UniversalPointer
+data FCType = Int | Bool | DynamicStringPtr | Void | ConstStringPtr Int |  FCPointer FCType |
+              UniversalPointer | FunType FCType [FCType] | Class String | FCMethodsTable String
   deriving (Eq, Ord, Show)
 
 data FCBinaryOperator = Add | Sub | Div | Mul | Mod | LShift | RShif | ByteAnd | ByteOr | ByteXor |
@@ -83,7 +83,11 @@ data FCRegister = VoidReg | Reg String | ConstString Int | LitInt Int
 type PhiFrom = FCRegister
 type PhiValue = FCRegister
 
+type ClassRegister = FCRegister
+type PtrType = FCType
+
 data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
+                FunCallDynamic FCType FCRegister [(FCType, FCRegister)] |
                 FCBinOp FCType FCBinaryOperator FCRegister FCRegister |
                 FCUnOp FCType FCUnaryOperator FCRegister |
                 FCPhi FCType [(PhiValue, PhiFrom)] |
@@ -93,7 +97,9 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCFunArg FCType String Int |
                 FCJump FCRegister |
                 FCCondJump FCRegister FCRegister FCRegister |
-                GetField FCType String FCType FCRegister |
+                GetField FCType String FCType ClassRegister |
+                GetMethod FCType String FCType FCRegister |
+                GetMethodTable String PtrType ClassRegister |
                 GetElementPtr FCType Int FCType FCRegister |
                 GetElementPtrArr FCType Int FCType FCRegister |
                 FCLoad FCType FCType FCRegister |
@@ -150,7 +156,8 @@ data FCClass = FCClass
   { className :: String,
     parentName :: Maybe String,
     inheritedFields :: [(String, FCType)],
-    definedFields :: [(String, FCType)]
+    definedFields :: [(String, FCType)],
+    implementedMethods :: [FCFun]
   }
 
 data FCProg = FCProg [(String, (FCType, [FCType]))] [(FCRegister, String)] [FCFun] [FCClass]
@@ -204,6 +211,8 @@ derefencePointerType = \case
   Class s -> undefined
   FCPointer ft -> ft
   UniversalPointer -> undefined
+  FunType{} -> undefined
+  FCMethodsTable{} -> undefined
 
 fCRValueType :: FCRValue -> FCType
 fCRValueType x = case x of
@@ -223,5 +232,11 @@ fCRValueType x = case x of
   FCLoad ft ft' fr -> ft
   FCStore ft fr ft' fr' -> Void
   FCSizeOf ft -> Int
-  _ -> error "Internal"
+  GetMethodTable className _ _ -> FCPointer $ FCPointer $ FCMethodsTable className
+  GetMethod ft _ _ _ -> FCPointer ft
+  FunCallDynamic ft _ _ -> ft
+  GetElementPtr ft _ _ _ -> ft
+  GetElementPtrArr ft _ _ _  -> ft
+  -- _ -> error "Internal"
+
 

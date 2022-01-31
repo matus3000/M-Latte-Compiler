@@ -10,6 +10,8 @@ module Translator.Translator(Translator,
                             withinConditionalBlock,
                             newClass,
                             evalTranslator,
+                            castClassUnsafe,
+                            setReferenceRecursivelyToRunTime,
                             MemoryState(..),
                             VariableState) where
 
@@ -24,13 +26,14 @@ import Translator.TranslatorEnvironment
 import qualified Translator.TranslatorEnvironment as TE
 import Translator.ClassRepresentation(ClassRepresentation(..))
 import qualified Translator.ClassRepresentation as TCR
-import qualified Data.Functor
+import qualified Translator.StructureData as SD
 
+import qualified Data.Functor
 import VariableEnvironment(CVariableEnvironment(..), VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import Data.List (foldl')
 import Data.Foldable (Foldable(toList))
-import Data.Maybe (fromMaybe, fromJust, isNothing, isJust)
+import Data.Maybe (fromMaybe, fromJust, isNothing, isJust, catMaybes)
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
 import Data.List as DL (find)
@@ -41,6 +44,7 @@ import IDefinition
 import CompilationError
 import Control.Monad.Except (throwError, Except)
 import CompilationError (SemanticError(SemanticError))
+import Class (Class(className))
 
 
 type StateStrMap x = State (DM.Map String x)
@@ -118,6 +122,16 @@ newClass className defaultValue = do
   modifyMemoryState (const (MemoryState (msArrays memory) structuresMap referenceMap allocator'))
   return reference
 
+castClassUnsafe :: Reference -> String -> Translator ()
+castClassUnsafe ref className = do
+  memory <- gets memoryState
+  mClassData <- asks $ fromJust . TE.lookupClass className
+  let old@(ClassRepresentation _map _sd _default) = fromJust $ DM.lookup ref $ msStructures memory
+      new = ClassRepresentation _map mClassData _default
+      referenceMap = DM.insert ref className $ msReferenceToType memory
+      structuresMap = DM.insert ref new $ msStructures memory
+  modifyMemoryState (const (MemoryState (msArrays memory) structuresMap referenceMap (msAllocator memory)))
+
 msModifyReferenceUnsafe :: Reference -> String -> IValue -> MemoryState -> MemoryState
 msModifyReferenceUnsafe ref member ivalue (MemoryState arr classes referenceTypes allocator) =
   let x = fromJust $ DM.lookup ref classes
@@ -129,7 +143,7 @@ getMember :: (Int, Int) -> Reference -> String -> Translator (IType, IValue)
 getMember pos ref member = do
   memoryState <- gets memoryState
   let object@(ClassRepresentation map sd defaultValue) = fromJust $ DM.lookup ref $ msStructures memoryState
-  let memberType = TE.sdFieldType member sd
+  let memberType = SD.lookupField member sd
   case (DM.lookup member map, memberType, defaultValue) of
     (_, Nothing, _) -> throwErrorInContext $ UndefinedField pos member
     (Just x, Just itype, _) -> return (itype, x)
@@ -141,15 +155,12 @@ getMember pos ref member = do
       return (LClass className, ivalue)
     (Nothing, Just itype, defaultValue) -> return (itype, defaultValue)
 
-universalReference :: LType
-universalReference = LClass ""
-
 setMember :: (Int,Int) -> Reference -> String -> (IType, IValue) -> Translator ()
 setMember pos ref memberName (itype, ivalue) = do
   _ <- getMember pos ref memberName
   memory <- gets memoryState
   let (ClassRepresentation map sd _default) = fromJust $ DM.lookup ref (msStructures memory)
-      memberType = TE.sdFieldType memberName sd
+      memberType = SD.lookupField memberName sd
       correct :: IType -> Bool
       correct = \x -> (x `same` itype ||
                        case x of
@@ -159,6 +170,26 @@ setMember pos ref memberName (itype, ivalue) = do
     Nothing -> throwErrorInContext $ UndefinedField pos memberName
     Just False -> throwErrorInContext $ TypeConflict pos (fromJust memberType) itype
     Just True -> modifyMemoryState (msModifyReferenceUnsafe ref memberName ivalue)
+
+setReferenceRecursivelyToRunTime :: Reference -> Translator ()
+setReferenceRecursivelyToRunTime reference = do
+  memory <- gets memoryState
+  let (ClassRepresentation structmap sd _default) = fromJust $ DM.lookup reference (msStructures memory)
+      refs = foldl (\refs (key, ivalue) -> let
+                            mref = case ivalue of
+                              OwningReference n -> Just n
+                              _ -> Nothing
+                              in
+                              (mref:refs))
+                     []
+                     (DM.toList structmap)
+      structmap' = DM.empty
+      classrepr' = ClassRepresentation structmap' sd RunTimeValue
+      references = catMaybes refs
+      memory' = MemoryState (msArrays memory) (DM.insert reference classrepr' (msStructures memory))
+        (msReferenceToType memory) (msAllocator memory)
+  modifyMemoryState (const memory')
+  mapM_ setReferenceRecursivelyToRunTime references
 
 setVariable :: (Int, Int) -> (Int, Int) -> String -> (IType, IValue) -> Translator ()
 setVariable varpos eqpos varname (itype', ivalue') = do
@@ -173,6 +204,7 @@ setVariable varpos eqpos varname (itype', ivalue') = do
       unless correctType (throwErrorInContext $
                            TypeConflict eqpos (cast itype) (cast itype'))
       modifyVarState (VE.setVar varname (itype', ivalue'))
+
 getVariable :: (Int, Int) -> String -> Translator (IType, IValue)
 getVariable pos varName = do
   venv <- gets varState

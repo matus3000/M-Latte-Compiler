@@ -6,12 +6,11 @@ module Translator.TranslatorEnvironment(FunctionData,
                                         getStructureEnvironment,
                                         getFunctionEnvironment,
                                         TranslationEnvironment,
-                                        sdFieldType,
-                                        sdHasField,
                                         getFunEnv,
                                         hasField,
                                         fieldType,
                                         lookupClass,
+                                        lookupMethod,
                                         isSubClass,
                                         getClassEnv,
                                         getContext,
@@ -33,14 +32,9 @@ import Latte.Abs (FieldDeclItem' (FieldDeclItem),
 import Control.Monad.Reader
 import Class (Class(className))
 
-type FunctionData = (LType, [LType])
-data StructureData = StructureData {fields :: [(String, LType)],
-                                    superclass :: Maybe String,
-                                    definedFields :: [(String, LType)],
-                                    inheritedFields :: [(String, LType)],
-                                    methods :: DM.Map String FunctionData,
-                                    methodsParents :: DM.Map String String}
-
+import Translator.FunctionData(FunctionData)
+import Translator.StructureData(StructureData)
+import qualified Translator.StructureData as SD
 
 type FunctionEnvironment = DM.Map String FunctionData
 type StructureDataMap = DM.Map String StructureData
@@ -52,9 +46,6 @@ data StructureEnvironment = StructureEnvironment {
 
 instance Show StructureEnvironment where
   show senv = show $ DM.toList (classMap senv)
-
-instance Show StructureData where
-  show sd = show (fields sd) ++ "," ++ show (definedFields sd)
 
 type FunctionContext = (LType, String, (Int, Int), Maybe String)
 
@@ -88,10 +79,10 @@ lookupClass className te = DM.lookup className $ (classMap . getClassEnv) te
 
 type StateStrMap x = State (DM.Map String x)
 
-isSubClass ::  LType -> LType -> TranslationEnvironment -> Bool
-isSubClass x y (_, se,_ ) = seIsSubclass x y se
 seIsSubclass :: LType -> LType -> StructureEnvironment -> Bool
 seIsSubclass type1 type2 se= case (type1, type2) of
+  (LClass "", LClass _) -> True
+  (LClass _, LClass "") -> True
   (LClass sub, LClass c) -> let
     noAncestors = Prelude.error $ "Not even an empty list of ancestors for class: " ++ sub
     ancestors = fromMaybe noAncestors $ DM.lookup sub (ihAncestors $ inheritanceInfo se)
@@ -99,64 +90,16 @@ seIsSubclass type1 type2 se= case (type1, type2) of
     DL.elem c ancestors
   _ -> False
 
-sdHasField :: String -> StructureData -> Bool
-sdHasField fieldName sd = case sdFieldType fieldName sd of
-  Just _ -> True
-  Nothing -> False
-sdFieldType :: String -> StructureData -> Maybe LType
-sdFieldType fieldName sd = snd <$> DL.find ((fieldName==).fst) (fields sd)
-sdHasMethod :: String -> StructureData -> Bool
+isSubClass ::  LType -> LType -> TranslationEnvironment -> Bool
+isSubClass x y (_, se,_ ) = seIsSubclass x y se
 hasField :: String -> String -> TranslationEnvironment -> Bool
 hasField  structure field tEnv = isJust $ fieldType structure field tEnv
 fieldType :: String -> String -> TranslationEnvironment -> Maybe LType
-fieldType structure fieldName tEnv = DM.lookup structure (classMap $ getClassEnv tEnv) >>=  DL.lookup fieldName . fields
-
--- type TemporalStructureEnvironment = DS.Set String
--- getStructureEnvironment :: Program -> CompilerExcept StructureEnvironment
--- getStructureEnvironment (Program _ _ structDefs) = do
---   _ <- structNames structDefs
---   foldlM buildEnv DM.empty (sortClassDefs structDefs)
---   where
---     buildEnv :: StructureEnvironment -> ClassDef -> CompilerExcept StructureEnvironment
---     buildEnv map  classDef = do
---       (className, superclass, initial, cmds) <- case classDef of
---         ClassDef ma (Ident className) cmds -> return (className, Nothing, [], cmds)
---         ClassDefExtends ma (Ident className) (Ident parent) cmds -> do
---           let parentDef = DM.lookup parent map
---           case parentDef of
---             Nothing -> throwError $ SemanticError (undefined `fromMaybe` ma)
---                                          (SuperclassNonexisting className parent)
---             Just sd -> return (className, Just parent, fields sd, cmds)
---       fields <- foldlM (structureDataBuildFields (getPosition classDef)) initial cmds
---       return $ DM.insert className (StructureData fields superclass undefined undefined) map
---     structureDataBuildFields :: (Int, Int) -> [(String, LType)] -> ClassMemberDef ->
---       CompilerExcept [(String, LType)]
---     structureDataBuildFields pos rest x = let
---       FieldDecl ma ty fdis = x
---       ltype = convertType ty
---       in
---       foldlM (\list (FieldDeclItem pos' (Ident id)) ->
---                 do
---                   let previousDef = DL.lookup id list
---                   if maybe False (ltype /=) previousDef
---                     then throwError $ SemanticError pos (RedefinitionOfField ((-1,-1) `fromMaybe` pos') id)
---                     else return ((id, ltype):list)
---                   ) rest fdis
---     sortClassDefs :: [ClassDef] -> [ClassDef]
---     sortClassDefs  = DL.sortOn f
---       where
---         f :: ClassDef -> String
---         f = \case
---           ClassDef _ (Ident id) _ -> "0_" ++ id
---           ClassDefExtends _ (Ident name) (Ident parent) _ -> "1_" ++ parent ++ "_" ++ name
---     structNames :: [ClassDef] -> CompilerExcept (DS.Set String)
---     structNames = foldlM
---           (\set def ->
---              (do
---                  let sName = getIdStr def
---                  when (DS.member sName set) (throwError (SemanticError (getPosition def) (RedefinitionOfStructure (getPosition def) sName)))
---                  return (DS.insert sName set)))
---           DS.empty
+fieldType structure fieldName tEnv = DM.lookup structure (classMap $ getClassEnv tEnv) >>=
+                                     (SD.lookupField fieldName)
+lookupMethod :: String -> String -> TranslationEnvironment -> Maybe (String, FunctionData)
+lookupMethod structure methodName tEnv = DM.lookup structure (classMap $ getClassEnv tEnv) >>=
+                                      SD.lookupMethod methodName
 
 getFunctionEnvironment :: Program -> CompilerExcept FunctionEnvironment
 getFunctionEnvironment (Program _ topDef structDef) =
@@ -273,7 +216,7 @@ classParsingPhase3 ih defs = runReaderT (foldM f DM.empty defs) ih
                         let
                           parentSD = fromJust (DM.lookup parent se)
                           in
-                          return (fields parentSD, methods parentSD, methodsParents parentSD)
+                          return (SD.fields parentSD, SD.methods parentSD, SD.methodsParents parentSD)
       let (className, parent, cmds, _methods) =case classdef of
             ClassDef ma (Ident id) cmds methods -> (id, Nothing, cmds, methods)
             ClassDefExtends ma (Ident id) (Ident parentName) cmds methods -> (id, Just parentName, cmds, methods)
@@ -301,7 +244,7 @@ classParsingPhase3 ih defs = runReaderT (foldM f DM.empty defs) ih
       let defined = reverse rdefined
 
 
-      return (DM.insert className (StructureData (inherited ++ defined) parent defined inherited _methods _parentsMethods) se)
+      return (DM.insert className (SD.StructureData (inherited ++ defined) parent defined inherited _methods _parentsMethods) se)
     _convertType :: Type -> (ReaderT InheritenceHierarchy CompilerExcept) LType
     _convertType ptype = do
       let converted = convertType ptype

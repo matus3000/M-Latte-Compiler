@@ -101,6 +101,7 @@ transExpr x = case x of
   Latte.Abs.ERel _ expr1 relop expr2 -> failure x
   Latte.Abs.EAnd _ expr1 expr2 -> failure x
   Latte.Abs.EOr _ expr1 expr2 -> failure x
+  Latte.Abs.EInternalCast _ type_ expr -> failure x
 
 transAddOp :: Show a => Latte.Abs.AddOp' a -> Result
 transAddOp x = case x of

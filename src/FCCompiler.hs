@@ -46,6 +46,7 @@ import FCCompiler.FCState (FCState (fcsConstants))
 import qualified FCCompiler.FCState as Fcs
 import System.Console.Terminfo.Effects (Attributes(reverseAttr))
 import Translator.Translator (universalReference)
+import qualified Translator.StructureData as SD
 
 externalFunctions :: [([Char], (FCType, [FCType]))]
 externalFunctions = [("printString", (Void, [DynamicStringPtr])),
@@ -314,6 +315,35 @@ translateExpr bname bb ie save =
         translateAndExpr bname bb ie True
       Tr.IOr _ -> do
         translateOrExpr bname bb ie True
+      Tr.IMethod ilvalue method args -> do
+        (bb', (fctype, fcreg)) <- translateILValue bb ilvalue True
+
+        let className =case derefencePointerType fctype of
+              Class s -> s
+              _ -> error $ "Trouble with fctype : " ++ show fctype
+            methodTableFCR = GetMethodTable className fctype fcreg
+        (bb'', (t1, tablePtrPtr)) <- emplaceFCRValue' methodTableFCR bb'
+        (bb''', (t2, loadedTable)) <- emplaceFCRValue' (FCLoad (derefencePointerType t1)
+                                                 t1 tablePtrPtr) bb''
+        (retType, x) <- asks $ fromJust . Fce.getMethodFCFunData className method
+        let functionType = FunType retType x
+        (bb4, (t3, ptrFunction)) <- emplaceFCRValue' (GetMethod functionType method
+                                               t2 loadedTable)
+                              bb'''
+        (bb5, (t4, loadedFunction)) <- emplaceFCRValue' (FCLoad (derefencePointerType t3)
+                                                  t3 ptrFunction)
+                                 bb4
+        (bb6, (t5, thisReg)) <- if (fctype == (head x))
+          then return (bb''', (fctype ,fcreg))
+          else emplaceFCRValue' (BitCast (head x) fctype fcreg) bb5
+
+        (bb7, args) <- foldlM
+          (\(bb, acc) ie -> BiFunctor.second (:acc) <$> translateExpr' bb ie True)
+          (bb,[])
+          args
+
+        emplaceFCRValue' (FunCallDynamic retType loadedFunction ((t5, thisReg):reverse args))
+          bb7
       Tr.IApp fun ies -> do
         (bb', rargs) <- foldlM
           (\(bb, acc) ie -> BiFunctor.second (:acc) <$> translateExpr' bb ie True)
@@ -347,6 +377,10 @@ translateExpr bname bb ie save =
         return (bb'', (fctype, res))
   where
     translateExpr' = translateExpr bname
+    emplaceFCRValue' :: FCRValue -> BlockBuilder  -> FCCompiler (BlockBuilder, (FCType,FCRegister))
+    emplaceFCRValue' fcr bb = do
+      (bb', fcreg) <- emplaceFCRValue fcr bb
+      return (bb', (fCRValueType fcr, fcreg))
 translateIItem :: String -> Tr.IItem -> BlockBuilder -> FCCompiler BlockBuilder
 translateIItem bname (Tr.IItem s ie) bb=
   do
@@ -539,11 +573,14 @@ translateIClass :: Tr.IClass -> FCCompiler FCClass
 translateIClass = \case
   Tr.IClass s x0 -> do
     sd <- asks (fromJust . Fce.getClassData s)
+    methods <- mapM translateFun x0
     return $ FCClass {
       className = s,
       parentName = Fce.superclass sd,
       inheritedFields  = map (BiFunctor.second convert) (Fce.inheritedFields sd),
-      definedFields = map (BiFunctor.second convert) (Fce.definedFields sd)}
+      definedFields = map (BiFunctor.second convert) (Fce.definedFields sd),
+      implementedMethods = methods
+      }
 
 translateIClasses :: [Tr.IClass] -> FCCompiler [FCClass]
 translateIClasses = mapM translateIClass

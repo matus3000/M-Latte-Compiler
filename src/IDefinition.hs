@@ -39,6 +39,7 @@ module IDefinition (LType(..),
                     getArgLType,
                     topDefArgs,
                     topDefBlock,
+                    topDefReturnType,
                     Indexed(..),
                     getPosition,
                     TypeClass(..),
@@ -92,8 +93,8 @@ data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType 
 --               StaticString String | DynamicString
 
 type UnifiedLValue = (String, LValue)
-type ModifiedLValues = [LValue]
-data ModifiedLvaluesBuilder = MLB (DM.Map UnifiedLValue LValue)
+type ModifiedLValues = [(LValue, Bool)]
+data ModifiedLvaluesBuilder = MLB (DM.Map UnifiedLValue (LValue, Bool, Int)) Int
 type DeclaredLvalues = (DS.Set LValue, DS.Set String)
 
 lvalueToUnified :: LValue -> UnifiedLValue
@@ -105,20 +106,27 @@ lvalueToUnified  = pruneLValue
       LVarMem ma lv id -> Data.BiFunctor.second (\x -> LVarMem Nothing x id)(pruneLValue lv)
       LVarArr ma lv ex -> undefined
 
-result :: ModifiedLvaluesBuilder -> [LValue]
-result mlb@(MLB map)= DM.elems map
+result :: ModifiedLvaluesBuilder -> [(LValue, Bool)]
+result mlb@(MLB map x)= DL.map (\(x,y,z)->(x,y)) $ DL.sortOn (\(x,y,z) -> z) (DM.elems map)
 
 mlbInsert :: LValue -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
 mlbInsert lvalue = mlbInsertUnified (lvalueToUnified lvalue, lvalue)
 
+mlbNextIndex :: ModifiedLvaluesBuilder -> Int
+mlbNextIndex (MLB x y) = y
+
 mlbInsertUnified :: (UnifiedLValue, LValue) -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
-mlbInsertUnified (unified, lvalue) original@(MLB x) =
-  if DM.member unified x then original else MLB (DM.insert unified lvalue x)
+mlbInsertUnified (unified, lvalue) original@(MLB x y) =
+  if DM.member unified x then original else MLB (DM.insert unified (lvalue, False, y) x) (y+1)
+
+mlbInsertUnifiedRec :: (UnifiedLValue, LValue) -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
+mlbInsertUnifiedRec (unified, lvalue) original@(MLB x y) =
+  if DM.member unified x then original else MLB (DM.insert unified (lvalue, True, y) x) (y+1)
 
 mlbUnion :: ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
-mlbUnion mlb@(MLB map) mlb'@(MLB map') = MLB $ DM.union map map'
+mlbUnion mlb@(MLB map y) mlb'@(MLB map' y') = MLB (DM.union map map') (max y y')
 
-mlbEmpty :: ModifiedLvaluesBuilder
+mlbEmpty :: Int -> ModifiedLvaluesBuilder
 mlbEmpty = MLB DM.empty
 
 dlContains :: UnifiedLValue -> DeclaredLvalues -> Bool
@@ -244,9 +252,9 @@ preprocessMembers members =  (f members, g members)
           Lt.FieldDecl ma ty fdis -> res
           Lt.MemthodDecl ma ty name args block -> MethodDecl ma ty name args block' : res
             where
-              initiallyDeclared = DS.fromList $ map getIdStr args
+              initiallyDeclared = DS.fromList $ "this":map getIdStr args
               (BStmt a block', _, _) = stmtToEnrichedStmt
-                (Lt.BStmt a (addThisEverywhere initiallyDeclared block)) mlbEmpty dlEmpty
+                (Lt.BStmt a (addThisEverywhere initiallyDeclared block)) (mlbEmpty 0) dlEmpty
 
 preprocessProgram :: Lt.Program -> Program
 preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
@@ -270,7 +278,7 @@ preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
     g :: Lt.Block  -> Block
     g block@(Lt.Block a _) = block'
       where
-        (BStmt a block', _, _) = stmtToEnrichedStmt (Lt.BStmt a block) mlbEmpty dlEmpty
+        (BStmt a block', _, _) = stmtToEnrichedStmt (Lt.BStmt a block) (mlbEmpty 0) dlEmpty
 
 stmtToEnrichedStmt :: Lt.Stmt -> ModifiedLvaluesBuilder ->
                       DeclaredLvalues -> (Stmt, ModifiedLvaluesBuilder, DeclaredLvalues)
@@ -294,15 +302,22 @@ stmtToEnrichedStmt stmt md rd = case stmt of
                              in if dlContains ulv rd then md else mlbInsertUnified (ulv, lvalue) md
                           in
                         (Decr a lvalue, md', rd)
-  Lt.Decl a dtype items -> (Decl a dtype items, md, itemListToRedeclared items rd)
+  Lt.Decl a dtype items -> (Decl a dtype items, md', rd')
     where
-    itemListToRedeclared :: [Item] -> DeclaredLvalues -> DeclaredLvalues
-    itemListToRedeclared list set = foldl f set list
+    (rd', md') = itemListToRedeclared items md rd
+    itemListToRedeclared :: [Item] -> ModifiedLvaluesBuilder ->DeclaredLvalues
+      -> (DeclaredLvalues, ModifiedLvaluesBuilder)
+    itemListToRedeclared list mlb dl = foldl f (dl, mlb) list
       where
-        f :: DeclaredLvalues -> Item -> DeclaredLvalues
-        f set (NoInit pos (Ident x)) = dlInsert (lvalueToUnified (LVar pos (Ident x))) set
-        f set (Init pos (Ident x) _) = dlInsert (lvalueToUnified (LVar pos (Ident x))) set
-  Lt.SExp a expr -> (SExp a expr, md, rd)
+        f :: (DeclaredLvalues,ModifiedLvaluesBuilder) -> Item -> (DeclaredLvalues,ModifiedLvaluesBuilder)
+        f (dl, md) (NoInit pos (Ident x)) = (dlInsert (lvalueToUnified (LVar pos (Ident x))) dl, md)
+        f (dl, md) (Init pos (Ident x) expr) = let
+          dl' = dlInsert (lvalueToUnified (LVar pos (Ident x))) dl
+          in
+            (dl', exprGetModifiedVars False expr md dl)
+  Lt.SExp a expr -> (SExp a expr, md', rd)
+    where
+    md' = exprGetModifiedVars False expr md rd
   Lt.BStmt a block -> (BStmt a newBlock, modified, rd)
     where
       (Lt.Block b stmts) = block
@@ -318,25 +333,52 @@ stmtToEnrichedStmt stmt md rd = case stmt of
       (stmts', modified, _) = f stmts
       newBlock = Block b (reverse stmts')
   Lt.VRet a -> (VRet a, md, rd)
-  Lt.Ret a expr -> (Ret a expr, md, rd)
-  Lt.Cond a expr stmt -> (Cond a expr stmt' (result md'), newmd, newrd)
+  Lt.Ret a expr -> (Ret a expr, md', rd)
     where
-      (stmt', md', rd') = stmtToEnrichedStmt stmt mlbEmpty dlEmpty
-      newmd = mlbUnion md md'
-      newrd = dlUnion rd rd'
-  Lt.CondElse a expr stmt1 stmt2 -> (CondElse a expr stmt1' stmt2' (result md'''), newmd, newrd)
+      md' = exprGetModifiedVars False expr md rd
+  Lt.Cond a expr stmt -> (Cond a expr stmt' (result md'), newmd, rd)
     where
-      (stmt1', md', rd') = stmtToEnrichedStmt stmt1 mlbEmpty dlEmpty
-      (stmt2', md'', rd'') = stmtToEnrichedStmt stmt2 mlbEmpty dlEmpty
+      _md = exprGetModifiedVars False expr md rd
+      (stmt', md', rd') = stmtToEnrichedStmt stmt (mlbEmpty (mlbNextIndex _md)) dlEmpty
+      newmd = mlbUnion _md md'
+  Lt.CondElse a expr stmt1 stmt2 -> (CondElse a expr stmt1' stmt2' (result md'''), newmd, rd)
+    where
+      _md = exprGetModifiedVars False expr md rd
+      (stmt1', md', rd') = stmtToEnrichedStmt stmt1 (mlbEmpty $ mlbNextIndex _md) dlEmpty
+      (stmt2', md'', rd'') = stmtToEnrichedStmt stmt2 (mlbEmpty $ mlbNextIndex md') dlEmpty
       md'''= mlbUnion md' md''
-      newmd = mlbUnion md md'''
-      newrd = dlUnion rd $ dlUnion rd' rd''
-  Lt.While a expr stmt -> (While a expr stmt' (result md'), newmd, newrd)
+      newmd = mlbUnion _md md'''
+  Lt.While a expr stmt -> (While a expr stmt' (result md'), newmd, rd)
     where
-      (stmt', md', rd') = stmtToEnrichedStmt stmt mlbEmpty dlEmpty
-      newmd = mlbUnion md md'
-      newrd = dlUnion rd' rd
-
+      md' = exprGetModifiedVars False expr md rd
+      (stmt', md'', rd') = stmtToEnrichedStmt stmt (mlbEmpty $ mlbNextIndex md') dlEmpty
+      newmd = mlbUnion md' md''
+  where
+    exprGetModifiedVars :: Bool -> Lt.Expr -> ModifiedLvaluesBuilder -> DeclaredLvalues -> ModifiedLvaluesBuilder
+    exprGetModifiedVars funArg expr mlb decl= case expr of
+      EVar ma lv -> if funArg then
+        let ulv=lvalueToUnified lv
+        in
+          if dlContains ulv decl then mlb
+          else mlbInsertUnifiedRec (ulv, lv) mlb
+        else mlb
+      ELitInt ma n -> mlb
+      ELitTrue ma -> mlb
+      ELitFalse ma -> mlb
+      ENull ma -> mlb
+      EApp ma id exs -> foldl (\mlb expr -> exprGetModifiedVars True expr mlb decl) mlb exs
+      EMethod ma lv id exs -> foldl (\mlb expr -> exprGetModifiedVars True expr mlb decl) mlb (EVar ma lv:exs)
+      EString ma s -> mlb
+      ENewArray ma ty ex -> mlb
+      ENewClass ma ty -> mlb
+      Neg ma ex -> mlb
+      Not ma ex -> mlb
+      EMul ma ex mo ex' -> mlb
+      EAdd ma ex ao ex' -> mlb
+      ERel ma ex ro ex' -> mlb
+      EAnd ma ex ex' -> mlb
+      EOr ma ex ex' -> mlb
+      EInternalCast ma ty ex -> mlb
 convertType :: Type -> LType
 convertType (Int _) = LInt
 convertType (Str _) = LString
@@ -352,6 +394,8 @@ topDefArgs :: TopDef -> [Arg]
 topDefArgs (FnDef _ _ _ args _) = args
 topDefBlock :: TopDef -> Block
 topDefBlock (FnDef _ _ _ _ block) = block
+topDefReturnType :: TopDef -> Type
+topDefReturnType (FnDef _ t _ _ _) = t
 
 instance HasPosition TopDef where
   hasPosition = \case
@@ -427,3 +471,4 @@ instance Show LType where
   showsPrec x LVoid = showString "Void"
   showsPrec x LString = showString "String"
   showsPrec x (LClass string) = showString string
+

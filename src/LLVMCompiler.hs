@@ -13,9 +13,13 @@ import Control.Monad.State (unless)
 import Data.List as DL
 import Numeric(showHex)
 import qualified Control.Arrow as BiFunctor
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing, fromJust)
 import Data.Char (ord)
-import System.Process (CreateProcess(env))
+
+import LLVMCompiler.FunctionTable (FunctionTable, MethodInfo(..))
+import qualified LLVMCompiler.FunctionTable as FT
+import LLVMCompiler.Outputable
+import qualified Data.Bifunctor as BiFunctor
 
 type ExternalImport = (String, (FCType, [FCType]))
 data LLVMInstr = FC_ FCInstr | LL String | LLInstr (FCRegister, LLVMInternalInstr)
@@ -27,12 +31,14 @@ data LLVMFunDecl = LLVMFunDecl String FCType [(FCType, FCRegister)] [LLVMInstr]
 data LLVMClassDecl = LLVMClassDecl {llClassName :: String,
                                     llFieldsMap :: DM.Map String Int,
                                     llFields :: [FCType],
-                                    llNextId :: Int}
+                                    llNextId :: Int,
+                                    llFunctionTable :: Maybe FunctionTable}
 
 data LLVMModule = LLVMModule {externalImports::[ExternalImport],
                               constants::[(FCRegister, String)],
                               functions::[LLVMFunDecl],
-                              classes :: [LLVMClassDecl]}
+                              classes :: [LLVMClassDecl],
+                              vtables :: [FunctionTable]}
 type LLVMBlockBuilder = [LLVMInstr]
 
 dummyReturn :: FCType -> LLVMInstr
@@ -54,7 +60,6 @@ changesFlow x = case x of
   LLInstr (fr, fv) -> case fv of
      PtrToInt ft fr' -> False
 
-
 type LLVMClassEnv = DM.Map String LLVMClassDecl
 type LLVMEnv = LLVMClassEnv
 
@@ -71,33 +76,83 @@ llEnvFieldMapping className fieldName env = let
 llEnvMethodMapping :: String -> String -> LLVMEnv -> Int
 llEnvMethodMapping = undefined
 
-toLLVMStructs :: [FCClass] -> (LLVMClassEnv, [LLVMClassDecl])
-toLLVMStructs fcclasses = (\res -> (DM.fromList (map (\x -> (llClassName x, x)) res), res))
-  $ reverse (foldl f [] fcclasses)
+vtablename = "_vtable"
+
+toLLVMStructs :: [FCClass] -> (LLVMClassEnv, [LLVMClassDecl],  [FunctionTable])
+toLLVMStructs fcclasses = (\(res, vtables) -> (DM.fromList (map (\x -> (llClassName x, x)) res), res, vtables))
+  $ BiFunctor.bimap reverse reverse (foldl f ([],[]) fcclasses)
   where
-    f :: [LLVMClassDecl] -> FCClass
-      -> [LLVMClassDecl]
-    f res fcclass = let
+    defineFields ::  [(String, FCType)]->LLVMClassDecl -> LLVMClassDecl
+    defineFields fields lcd = let
+      (_llFieldsMap, _llFields, _llNextId) = (\(x,y,z) -> (x, llFields lcd ++ reverse y,z)) $ foldl
+        (\(map,res,id) (fname, ftype)->
+            (DM.insert fname id map, ftype:res, id+1))
+        (llFieldsMap lcd, [], llNextId lcd)
+        fields
+      in
+        LLVMClassDecl (llClassName lcd) _llFieldsMap _llFields _llNextId (llFunctionTable lcd)
+    defineMethods :: [FCFun] -> LLVMClassDecl -> LLVMClassDecl
+    defineMethods methods lcd = let
+      f :: FunctionTable -> FCFun -> FunctionTable
+      f vtable fcfun = let fun = case FT.lookupMethod (name fcfun) vtable of
+                             Nothing -> FT.declareMethod (name fcfun) (FunType (retType fcfun)
+                                                                        ((map fst . args) fcfun))
+                             Just n -> FT.overrideMethod (name fcfun)
+                       in
+                         fun vtable
+      vtable' = case llFunctionTable lcd of
+        Just vtable -> Just $ foldl f vtable methods
+        Nothing -> Nothing
+      in
+      LLVMClassDecl (llClassName lcd) (llFieldsMap lcd) (llFields lcd) (llNextId lcd) vtable'
+    overrideTypeOfVirtualTable :: String -> [FCType] -> [FCType]
+    overrideTypeOfVirtualTable name list = map (\ y -> case y of
+                                                    FCPointer (FCMethodsTable s)->FCPointer (FCMethodsTable name)
+                                                    FCMethodsTable s -> FCMethodsTable name
+                                                    _-> y) list
+    f :: ([LLVMClassDecl], [FunctionTable]) -> FCClass
+      -> ([LLVMClassDecl], [FunctionTable])
+    f (res, vtables) fcclass = let
       name = className fcclass
       superclass = parentName fcclass
       parent = case superclass of
         Just name -> Just $ error "Something is wrong here" `fromMaybe` DL.find ((name ==) . llClassName) res
         _ -> Nothing
-      seed@(inheritedMap, inheritedFields, inheritedIndex) = case parent of
-        Nothing -> (DM.empty, [], 0)
-        Just lcd -> (llFieldsMap lcd, llFields lcd, llNextId lcd)
+      seed@(inheritedMap, inheritedFields, inheritedIndex, inheritedTable) = case parent of
+        Nothing -> (DM.empty, [], 0, Nothing)
+        Just lcd -> (llFieldsMap lcd, llFields lcd, llNextId lcd, llFunctionTable lcd)
       -- fieldMapper :: (DM.Map String Int, [FCType], Int) ->
-      (_llFieldsMap, _llFields, _llNextId) = (\(x,y,z) -> (x, inheritedFields ++ reverse y,z)) $ foldl
-        (\(map,res,id) (fname, ftype)->
-            -- (DM.insert fname id map, (Class fname):res, id+1))
-            (DM.insert fname id map, ftype:res, id+1))
-        (inheritedMap, [], inheritedIndex) (definedFields fcclass)
+      (table, declared, redefined)
+        | (null $ implementedMethods fcclass) = (inheritedTable, False, False)
+        | isNothing inheritedTable = (Just $ FT.new name, True, False)
+        | otherwise = (Just $ FT.newInherited name (fromJust inheritedTable), False, True)
+      fields = (if declared then ((vtablename, FCPointer $ FT.getType (fromJust table)):) else id)
+        (definedFields  fcclass)
+      inheritedFields'
+        | redefined = overrideTypeOfVirtualTable name inheritedFields
+        | otherwise = inheritedFields
+      resultLCD = defineMethods (implementedMethods fcclass) $ defineFields fields $
+        LLVMClassDecl name inheritedMap inheritedFields' inheritedIndex table
       in
-      LLVMClassDecl name _llFieldsMap _llFields _llNextId:res
+      (resultLCD : res, if declared || redefined then fromJust (llFunctionTable resultLCD):vtables
+                        else vtables)
 
 bbAddInstr :: LLVMEnv -> LLVMBlockBuilder -> LLVMInstr -> LLVMBlockBuilder
 bbAddInstr env bb linstr = case linstr of
   FC_ inst@(reg, fcinstr) -> case fcinstr of
+    GetMethod _ methodName ft fr -> let
+      className = case ft of
+        FCPointer (FCMethodsTable s) -> s
+        _ -> error $ show ft
+      ftres = fCRValueType fcinstr
+      index = llEnvMethodMapping className methodName env
+      in
+      FC_ (reg, GetElementPtr ftres index ft fr) : bb
+    GetMethodTable className ft fr ->
+       let ftres = fCRValueType fcinstr
+           index = llEnvFieldMapping className vtablename env
+       in
+         FC_ (reg, GetElementPtr ftres index ft fr) : bb
     GetField ft s ft' fr ->
       let
         className = case ft' of
@@ -174,19 +229,6 @@ llvmBuildBuilder env rettype bb = let
           _ -> if changesFlow l1 && changesFlow l2
                then f (l2:l3) rest
                else f (l2:l3) (l1:rest)
-
-class Outputable a where
-  output :: a -> String
-
-instance Outputable FCType where
-  output Int = "i32"
-  output Bool = "i1"
-  output DynamicStringPtr = "i8*"
-  output (ConstStringPtr x) = "[" ++ show x ++ " x i8 ]*"
-  output Void = "void"
-  output (Class x) = "%"++x
-  output (FCPointer (Class "")) = "i8*"
-  output (FCPointer fctype) = output fctype ++ "*"
 
 instance Outputable FCBinaryOperator where
   output x =
@@ -286,7 +328,7 @@ instance Outputable LLVMFunDecl where
                         output ftype ++ " " ++ output freg ++ (if null s then "" else ", ") ++ s) ""
 
 instance Outputable LLVMClassDecl where
-  output (LLVMClassDecl _className _ _llFields _ ) =
+  output (LLVMClassDecl _className _ _llFields _ _) =
     "%" ++ _className ++ " = type {" ++ outputFields _llFields ++ "}"
     where
       outputFields :: [FCType] -> String
@@ -294,11 +336,12 @@ instance Outputable LLVMClassDecl where
       outputFields (x:xs) = output x ++ (if null xs then "" else "," ++ outputFields xs)
 
 instance Outputable LLVMModule where
-  output (LLVMModule exts consts funs classes) =
+  output (LLVMModule exts consts funs classes vtables) =
     concatMap (\(reg,str)-> outputConstant reg str ++ "\n") consts
     ++ (if null consts then "" else "\n") ++
     concatMap (\(name, (rtype, args))-> outputExternalFunction name rtype args ++ "\n") exts
     ++ (if null consts then "" else "\n") ++
+    concatMap (\x -> output x ++ "\n\n") vtables ++
     concatMap (\x -> output x ++ "\n\n") classes ++
     concatMap (\x -> output x ++ "\n\n") funs
     where
@@ -327,9 +370,10 @@ instance Outputable LLVMModule where
 
 compile :: FCProg -> String
 compile (FCProg exts consts funs classes) =
-  output (LLVMModule exts consts (map f funs) llvmClasses)
+  output (LLVMModule exts consts (map f
+                                  funs) llvmClasses llvmVTables)
   where
-    (llvmStructEnv, llvmClasses) = toLLVMStructs classes
+    (llvmStructEnv, llvmClasses, llvmVTables) = toLLVMStructs classes
     llvmEnv = llvmStructEnv
     f :: FCFun -> LLVMFunDecl
     f (FCFun' fname ftype args iblock) = LLVMFunDecl fname ftype args

@@ -115,6 +115,8 @@ EAnd.      Expr1 ::= Expr2 "&&" Expr1 ;
 
 EOr.       Expr ::= Expr1 "||" Expr ;
 
+internal  EInternalCast. Expr ::= "internalCast" "(" Type ")" Expr;
+
 coercions  Expr 7 ;
 
 separator  Expr "," ;

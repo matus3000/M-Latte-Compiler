@@ -12,6 +12,9 @@ type CompilerExcept = Except SemanticError
 
 type IType = LType
 
+universalReference :: LType
+universalReference = LClass ""
+
 data MetaData = MD {modVars :: [ILValue]}
 
 instance Show MetaData where
@@ -43,6 +46,7 @@ data ILValue = IVar String | IMember ILValue String | IBracketOp String IExpr
 data IExpr = ILitInt Integer |
   ILitBool Bool |
   IApp String [IExpr] |
+  IMethod ILValue String [IExpr] |
   ILValue ILValue |
   IString String |
   INeg IExpr |

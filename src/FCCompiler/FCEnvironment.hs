@@ -4,16 +4,21 @@ module FCCompiler.FCEnvironment (FCEnvironment,
                                 isIoFunction,
                                 getMutabaleArgsOfFunction,
                                 hasMutableArgs,
+                                getMethodFCFunData,
                                 getClassData,
                                 new,
                                 StructureData(..)) where
 
-import Translator.TranslatorEnvironment (StructureData(..), StructureEnvironment(..))
+import Translator.StructureData(StructureData(..))
+import qualified Translator.StructureData as SD
+import Translator.TranslatorEnvironment (StructureEnvironment(..), FunctionData)
 import FCCompilerTypes (FCType (FCPointer, UniversalPointer), FCFun, FCFun' (retType), FCRValue(..), FCRegister, FCClass (className))
 
 import qualified Data.Map as DM
 import qualified Data.Set as DS
 import Data.Maybe (fromJust)
+import Translator (Convertable(convert))
+import qualified IDefinition as IDef
 
 data FCFunEnv = FCFunEnv {retTypes :: DM.Map String FCType,
                           mutableArgs :: DM.Map String [Bool],
@@ -34,6 +39,18 @@ getMutabaleArgsOfFunction :: String -> FCEnvironment -> Maybe [Bool]
 getMutabaleArgsOfFunction funname = DM.lookup funname . mutableArgs . fEnv
 getClassData :: String -> FCEnvironment -> Maybe StructureData
 getClassData className fcenv = DM.lookup className $ (classMap . sEnv) fcenv
+
+getMethodFCFunData :: String -> String -> FCEnvironment -> Maybe (FCType, [FCType])
+getMethodFCFunData className methodName fcenv =
+  let
+    cd = fromJust $ getClassData className fcenv
+    (parent, (retType, fundata)) = fromJust $ SD.lookupMethod methodName cd
+    fcRet :: FCType
+    fcRet = convert retType
+    fcFunData :: [FCType]
+    fcFunData = map convert (IDef.LClass parent:fundata)
+  in
+    Just (fcRet, fcFunData)
 
 isRValueRunTime :: FCRValue -> FCEnvironment -> Bool
 isRValueRunTime fcrval env = case fcrval of

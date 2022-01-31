@@ -72,7 +72,7 @@ getVars set fcrvalue = case fcrvalue of
   FCStore ft fr ft' fr' -> foldl' insertReg set [fr, fr']
   FCSizeOf ft -> set
   GetElementPtr _ x _ fr -> insertReg set fr
-  FunCallDynamic ft fr x0 -> foldl insertReg set (fr:map snd x0)
+  FunCallDynamic ft fr x0 -> foldl' insertReg set (fr:map snd x0)
   GetMethod ft s ft' fr -> insertReg set fr
   GetMethodTable s ft fr -> insertReg set fr
   GetElementPtrArr ft n ft' fr -> insertReg set fr

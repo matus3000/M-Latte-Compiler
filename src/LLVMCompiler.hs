@@ -281,6 +281,8 @@ instance Outputable FCRValue where
   output (FCCondJump c1 s f) = "br i1 " ++ output c1 ++ ", label "
     ++ output s ++ ", label " ++ output f
   output (FunCall rtype fname args) = "call " ++ outputFun fname rtype args
+  output (FunCallDynamic rt reg args) = "call " ++ output rt ++ " " ++ output reg
+    ++ "("++ intercalate ", " (map (\(x, y) -> output x ++" "++ output y) args) ++ ")" 
   output GetField {} = error "This one is internal."
   output (GetElementPtr ft x fc r) = "getelementptr " ++ output (derefencePointerType fc) ++ ", "
     ++ output fc ++ " " ++ output r ++ ", i32 0, i32 " ++ show x
@@ -291,6 +293,7 @@ instance Outputable FCRValue where
     ++ output ftp ++ " " ++ output ptr
   output (FCSizeOf f) = error "This one is a macro"
   output FCEmptyExpr = ""
+
   -- output _ = error "Instancja Output dla FCRValue niezdefiniowana"
 
 instance Outputable LLVMInternalInstr where

@@ -75,7 +75,8 @@ runCompiler p s =
           exitWith (ExitFailure argumentError)
         Right tcode ->
           do
-            let code = LLVM.compile $ compileProg tcode
+            let fccode = compileProg tcode
+                code  = LLVM.compile fccode
             putStrLnStderr "OK"
             if test then showStructureData tcode
               else putStr code

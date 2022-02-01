@@ -248,7 +248,10 @@ translateILValue bb ilvalue bool = do
 getILValue :: Tr.ILValue  -> FCCompiler (Maybe (FCType, FCRegister))
 getILValue ilvalue = do
   state <- get
-  (bb, result) <- translateILValue bbNew ilvalue True
+  (bb, result) <- case ilvalue of
+    Tr.IVar s -> translateILValue bbNew ilvalue True
+    Tr.IMember iv s -> translateExpr "" bbNew (Tr.ILValue ilvalue) True
+    _ -> error ""
   let res = case bb of
         BB [] s [] ->  Just result
         BB {} -> Nothing
@@ -368,8 +371,9 @@ translateExpr bname bb ie save =
             sizeType = fCRValueType sizeInstr
         (bb', size) <- emplaceFCRValue sizeInstr bb
         (bb'', reg) <- emplaceFCRValue (FunCall DynamicStringPtr "_new" [(sizeType, size)]) bb'
-        (bb''', res) <- emplaceFCRValue (BitCast fctype DynamicStringPtr reg) bb''
-        return (bb''', (fctype, res))
+        (bb''', (fctype, res)) <- emplaceFCRValue' (BitCast fctype DynamicStringPtr reg) bb''
+        (bb4, x) <- emplaceFCRValue' (FCInitObject Void fctype res) bb'''
+        return (bb4, (fctype, res))
       Tr.ICast ltype iexpr -> do
         let
           fctype :: FCType
@@ -515,23 +519,25 @@ translateInstr name bb stmt = case stmt of
   Tr.IStmtEmpty -> return bb
   where
     flushDynamicRegister :: (Tr.ILValue, Bool) -> FCCompiler ()
-    flushDynamicRegister  = error . show
-      -- \case
-      -- (iv, True)  -> do
-      --   mlval<- getILValue iv
-      --   case mlval of 
-      --     Nothing -> return ()
-      --     Just (_, reg) -> modify $ Fcs.registerToDynamicRec reg
-      -- (iv, False) -> do
-      --   case iv of
-      --     Tr.IVar s -> return ()
-      --     _ -> do
-      --       mlval <- getILValue iv
-      --       case mlval of
-      --         Just (ftype, freg) -> case ftype of
-      --           FCPointer ft -> modify (Fcs.clearRValue (FCLoad ft ftype freg))
-      --           _ -> error $ show (ftype, freg)
-      --         Nothing -> return ()
+    flushDynamicRegister  = -- error . show
+      \case
+      (iv, True)  -> do
+        mlval<- getILValue iv
+        case mlval of 
+          Nothing -> error "SFADFA"
+            -- return ()
+          Just (_, reg) -> -- error $ show mlval
+            modify $ Fcs.registerToDynamicRec reg
+      (iv, False) -> do
+        case iv of
+          Tr.IVar s -> return ()
+          _ -> do
+            mlval <- getILValue iv
+            case mlval of
+              Just (ftype, freg) -> case ftype of
+                FCPointer ft -> modify (Fcs.clearRValue (FCLoad ft ftype freg))
+                _ -> error $ show (ftype, freg)
+              Nothing -> return ()
     translateIItem' = flip $ translateIItem name
     translateExpr' = translateExpr name
     translateInstr' = translateInstr name bb

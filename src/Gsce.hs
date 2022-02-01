@@ -72,13 +72,14 @@ isRValueDynamic env fcr = case fcr of
   FCCondJump fr fr' fr2 -> True
   GetField ft s ft' fr -> isRegisterDynamic' fr
   FCLoad ft ft' fr -> isRegisterDynamic' fr
-  FCStore ft fr ft' fr' -> True
+  FCStore ft fr ft' fr' -> any isRegisterDynamic' [fr, fr']
   GetElementPtr {} -> True
   FCSizeOf _ -> False
   FunCallDynamic ft fr x0 -> True
   GetMethod ft s ft' fr -> isRegisterDynamic' fr
   GetMethodTable s ft fr -> isRegisterDynamic' fr
   GetElementPtrArr ft n ft' fr -> isRegisterDynamic' fr
+  FCInitObject ft ft' fr -> isRegisterDynamic' fr
   where
     isFunDynamic' = isFunDynamic env
     isRegisterDynamic' = isRegisterDynamic env
@@ -134,7 +135,7 @@ substituteRegisters substitution fcrvalue = case fcrvalue of
   GetMethod ft s ft' fr -> GetMethod ft s ft' (subst fr)
   GetMethodTable s ft fr -> GetMethodTable s ft (subst fr)
   GetElementPtrArr ft n ft' fr -> GetElementPtrArr ft n ft' (subst fr)
-
+  FCInitObject ft ft' fr -> FCInitObject ft ft' (subst fr)
   where
     subst :: FCRegister -> FCRegister
     subst reg = reg `fromMaybe` DM.lookup reg  substitution
@@ -264,18 +265,6 @@ gcse env (args, (vib, vbb), block) =
 
 getDynamicRegisters :: FCEnvironment -> DS.Set FCRegister -> FCBlock -> DS.Set FCRegister
 getDynamicRegisters _ _ _ = DS.empty
--- getDynamicRegisters dfuns set block = case block of
---   FCNamedSBlock s x0 x1 -> foldl' (\set (reg, fcrvalue) ->
---                                      if reg == VoidReg then set
---                                      else if isRValueDynamic (dfuns, set) fcrvalue
---                                           then DS.insert reg set
---                                           else set) (set) x0
---   FCComplexBlock s fbs x0 -> foldl' getDynamicRegisters' set fbs
---   FCCondBlock s fb fr fb' fb2 fb3 x0 -> foldl' getDynamicRegisters' set [fb, fb', fb2, fb3]
---   FCPartialCond s fb fr fb' fb2 x0 -> foldl' getDynamicRegisters' set [fb, fb', fb2]
---   FCWhileBlock s fb fb' fr fb2 str x0 -> set
---   where
---     getDynamicRegisters' = getDynamicRegisters dfuns
 
 gcseOptimizeProd :: FCEnvironment -> FCBlock -> FCBlock
 gcseOptimizeProd dynFun block =

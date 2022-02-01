@@ -152,7 +152,8 @@ addFCRValue fcrval onconflict fcstate = let
           TwoWay -> (DM.insert r fcrval regmap, VE.declareVar fcrval r rvaluemap)
           RValueToReg -> (regmap, VE.declareVar fcrval r rvaluemap)
         regreg' = case fcrval of
-          GetField ft s ft' fr -> DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
+          GetField ft s ft' fr -> 
+            DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
           GetElementPtr ft n ft' fr -> DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
           _ -> regreg
         fstate' =  fcsPutSSAAloc ssa' $
@@ -183,22 +184,24 @@ clearRValue fcrvalue fcs = let
   _fcsRegMap = fcsRegMap fcs
   rvalmap = _rvalueMap $ fcsRegMap fcs
   rvalmap' = case VE.lookupVar fcrvalue rvalmap of
-    Nothing -> error $ "Development - no mapping for :" ++ show fcrvalue
+    Nothing -> rvalmap
     Just s -> VE.undeclareVar fcrvalue rvalmap
   in
   fcsPutRegMap (FCRegMap (_regMap _fcsRegMap) rvalmap' (_regToPtrRegMap _fcsRegMap)) fcs
 
 registerToDynamicRec :: FCRegister -> FCState -> FCState
-registerToDynamicRec reg fcs = let
+registerToDynamicRec reg fcs =
+  let
   regmap = fcsRegMap fcs
   registermap = _regMap regmap
   regregmap = _regToPtrRegMap regmap
   subregisters :: Maybe [(Maybe FCType, FCRegister)]
-  subregisters = map (\x -> (fCRValueType <$>DM.lookup x registermap, x)) <$> DM.lookup reg regregmap
+  subregisters = -- error $ show (DM.lookup reg regregmap)
+    map (\x -> (fCRValueType <$>DM.lookup x registermap, x)) <$> DM.lookup reg regregmap
   in
   case subregisters of
     Nothing -> fcs
-    Just x0 ->
+    Just x0 -> -- error $ show x0
       let
          f :: (VE.VarEnv FCRValue FCRegister, [FCRegister]) -> (Maybe FCType, FCRegister) ->
               (VE.VarEnv FCRValue FCRegister, [FCRegister])

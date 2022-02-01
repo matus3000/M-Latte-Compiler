@@ -77,7 +77,7 @@ binOpType x = case x of
   Ge -> FBoolean
 
 data FCRegister = VoidReg | Reg String | ConstString Int | LitInt Int
-                | LitBool Bool | Et String | FCNull FCType
+                | LitBool Bool | Et String | FCNull FCType | ConstValue String
   deriving (Eq, Ord, Show)
 
 type PhiFrom = FCRegister
@@ -104,6 +104,7 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 GetElementPtrArr FCType Int FCType FCRegister |
                 FCLoad FCType FCType FCRegister |
                 FCStore FCType FCRegister FCType FCRegister |
+                FCInitObject FCType FCType FCRegister |
                 FCSizeOf FCType 
   deriving (Eq, Ord, Show)
 
@@ -237,6 +238,7 @@ fCRValueType x = case x of
   FunCallDynamic ft _ _ -> ft
   GetElementPtr ft _ _ _ -> ft
   GetElementPtrArr ft _ _ _  -> ft
+  FCInitObject {} -> Void
   -- _ -> error "Internal"
 
 

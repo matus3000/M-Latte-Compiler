@@ -348,11 +348,11 @@ stmtToEnrichedStmt stmt md rd = case stmt of
       (stmt2', md'', rd'') = stmtToEnrichedStmt stmt2 (mlbEmpty $ mlbNextIndex md') dlEmpty
       md'''= mlbUnion md' md''
       newmd = mlbUnion _md md'''
-  Lt.While a expr stmt -> (While a expr stmt' (result md'), newmd, rd)
+  Lt.While a expr stmt -> (While a expr stmt' (result md''), newmd, rd)
     where
-      md' = exprGetModifiedVars False expr md rd
-      (stmt', md'', rd') = stmtToEnrichedStmt stmt (mlbEmpty $ mlbNextIndex md') dlEmpty
-      newmd = mlbUnion md' md''
+      md' = exprGetModifiedVars False expr (mlbEmpty $ mlbNextIndex md) rd
+      (stmt', md'', rd') = stmtToEnrichedStmt stmt md' dlEmpty
+      newmd = mlbUnion md md''
   where
     exprGetModifiedVars :: Bool -> Lt.Expr -> ModifiedLvaluesBuilder -> DeclaredLvalues -> ModifiedLvaluesBuilder
     exprGetModifiedVars funArg expr mlb decl= case expr of

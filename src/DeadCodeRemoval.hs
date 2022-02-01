@@ -24,6 +24,7 @@ isRValDynamic env set fcrval = case fcrval of
   FCJump fr -> True
   FCCondJump fr fr' fr2 -> True
   FunCallDynamic {} -> True
+  FCInitObject _ _ fr -> DS.member fr set
   _ -> False
   where
     isPointer :: FCType -> Bool
@@ -76,7 +77,7 @@ getVars set fcrvalue = case fcrvalue of
   GetMethod ft s ft' fr -> insertReg set fr
   GetMethodTable s ft fr -> insertReg set fr
   GetElementPtrArr ft n ft' fr -> insertReg set fr
-
+  FCInitObject ft ft' fr -> insertReg set fr 
 
 getNewDynamicVars :: DynamicFunctions -> (DS.Set FCRegister, DS.Set FCRegister) -> FCBlock
       -> (DS.Set FCRegister, DS.Set FCRegister)

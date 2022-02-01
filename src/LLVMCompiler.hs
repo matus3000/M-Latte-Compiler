@@ -64,6 +64,9 @@ changesFlow x = case x of
 type LLVMClassEnv = DM.Map String LLVMClassDecl
 type LLVMEnv = LLVMClassEnv
 
+llEnvLookupClass :: String -> LLVMEnv -> Maybe LLVMClassDecl
+llEnvLookupClass = DM.lookup
+
 llEnvFieldMapping :: String -> String -> LLVMEnv -> Int
 llEnvFieldMapping className fieldName env = let
   sEnv = env
@@ -71,6 +74,14 @@ llEnvFieldMapping className fieldName env = let
   fieldIndex = error ("No mapping of field " ++ fieldName ++ "for class " ++ className)
                `fromMaybe`
                DM.lookup fieldName (llFieldsMap classData)
+  in
+  fieldIndex
+
+llEnvLookupField ::  String -> String -> LLVMEnv -> Maybe Int
+llEnvLookupField className fieldName env = let
+  sEnv = env
+  classData = error ("Class " ++ className ++ " not found") `fromMaybe` DM.lookup className sEnv
+  fieldIndex =  DM.lookup fieldName (llFieldsMap classData)
   in
   fieldIndex
 
@@ -146,22 +157,48 @@ toLLVMStructs fcclasses = (\(res, vtables) -> (DM.fromList (map (\x -> (llClassN
       (resultLCD : res, if declared || redefined then fromJust (llFunctionTable resultLCD):vtables
                         else vtables)
 
+lookupVtableInfoForClass :: String -> LLVMEnv -> Maybe (Int, FCType, FCRegister)
+lookupVtableInfoForClass className env = do
+  classInfo <- llEnvLookupClass className env
+  vtableIndex <- DM.lookup vtablename (llFieldsMap classInfo)
+  vtable <- llFunctionTable classInfo
+  return (vtableIndex, FT.getType vtable, ConstValue $ (FT.outputName vtable) ++ "_data")
+
 bbAddInstr :: LLVMEnv -> LLVMBlockBuilder -> LLVMInstr -> LLVMBlockBuilder
 bbAddInstr env bb linstr = case linstr of
   FC_ inst@(reg, fcinstr) -> case fcinstr of
+    FCInitObject _ ft fr -> let
+      className = case ft of
+        FCPointer (Class s) -> s
+        _ -> error "Malformed FCInit"
+      in
+        case lookupVtableInfoForClass className env of
+          Just (index, ftype, table) -> let
+            (r_vtable, r_loadedvtable)  = case fr of
+              Reg s ->( Reg (s ++ "_vtable"), Reg (s ++ "_loadedvt"))
+              _ -> error "Here we expect a real register"
+            p2 = FCPointer . FCPointer
+            p3 = FCPointer . p2
+            getelement = FC_ (r_vtable, GetElementPtr (p2 ftype) index ft fr)
+            store = FC_ (VoidReg , FCStore (FCPointer ftype) table (p2 ftype) r_vtable)
+            in
+            store:getelement:bb
+          Nothing -> bb
     GetMethod _ methodName ft fr -> let
       className = case ft of
         FCPointer (FCMethodsTable s) -> s
         _ -> error $ show ft
+      (_,vtableObject,_) = fromJust $ lookupVtableInfoForClass className env
       ftres = fCRValueType fcinstr
       index = llEnvMethodMapping className methodName env
       in
-      FC_ (reg, GetElementPtr ftres index ft fr) : bb
+      FC_ (reg, GetElementPtr ftres index (FCPointer vtableObject) fr) : bb
     GetMethodTable className ft fr ->
        let ftres = fCRValueType fcinstr
            index = llEnvFieldMapping className vtablename env
+           (_,vtableObject,_) = fromJust $ lookupVtableInfoForClass className env
        in
-         FC_ (reg, GetElementPtr ftres index ft fr) : bb
+         FC_ (reg, GetElementPtr (FCPointer $ FCPointer $ FCPointer vtableObject) index ft fr) : bb
     GetField ft s ft' fr ->
       let
         className = case ft' of
@@ -170,6 +207,7 @@ bbAddInstr env bb linstr = case linstr of
         index = llEnvFieldMapping className s env
       in
         FC_ (reg, GetElementPtr ft index ft' fr):bb
+    FCLoad ft ft' fr -> (FC_ (reg, FCLoad (sanitizeVTable ft) (sanitizeVTable ft') fr) ): bb
     FCSizeOf fctype ->
       let
         _reg = Reg $ case reg of
@@ -183,7 +221,15 @@ bbAddInstr env bb linstr = case linstr of
     _ -> linstr : bb
   LL s -> linstr : bb
   LLInstr {} -> linstr : bb
-
+  where
+    sanitizeVTable :: FCType -> FCType
+    sanitizeVTable = \case
+      FCPointer ft -> FCPointer (sanitizeVTable ft)
+      FCMethodsTable s -> let 
+        (_,vtableObject,_) = fromJust $ lookupVtableInfoForClass s env
+        in
+        vtableObject
+      const -> const
 toLLVMBuilder :: LLVMEnv -> LLVMBlockBuilder -> FCBlock -> LLVMBlockBuilder
 toLLVMBuilder env up block = case block of
   FCNamedSBlock s x0 x1 -> foldl' bbAddInstr' up' (map convert x0)
@@ -263,6 +309,7 @@ instance Outputable FCRegister where
   output (LitInt x) = show x
   output (ConstString x) = "@S" ++ show x
   output (Et et) =  "%" ++ et
+  output (ConstValue s) = "@" ++ s
 
 instance Outputable FCRValue where
   output (FCBinOp ftype fbop r1 r2) =

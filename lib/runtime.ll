@@ -17,7 +17,15 @@ declare void @exit(i32)
 
 define i8* @_new(i32 %0) {
   %r1 = sext i32 %0 to i64
-  %r2 = call i8* @malloc(i64 %r1)
+  %cond = icmp sge i64 %r1, 8
+  br i1 %cond, label %L1, label %L2
+  L1:
+  br label %L3
+  L2:
+  br label %L3
+  L3:
+  %r1.5 = phi i64 [%r1, %L1], [8, %L2]
+  %r2 = call i8* @malloc(i64 %r1.5)
   ret i8* %r2
 }
 

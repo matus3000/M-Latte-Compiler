@@ -245,13 +245,15 @@ translateILValue bb ilvalue bool = do
       return (bb3, (memberPointerType, r2))
     _ -> undefined
 
-getILValue :: Tr.ILValue  -> FCCompiler (FCType, FCRegister)
+getILValue :: Tr.ILValue  -> FCCompiler (Maybe (FCType, FCRegister))
 getILValue ilvalue = do
+  state <- get
   (bb, result) <- translateILValue bbNew ilvalue True
-  case bb of
-    BB [] s [] -> return ()
-    BB {} -> error "There should be no need for new registers and instructions"
-  return result
+  let res = case bb of
+        BB [] s [] ->  Just result
+        BB {} -> Nothing
+  put state
+  return res
 
 translateExpr :: String -> BlockBuilder -> Tr.IExpr -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
 translateExpr bname bb ie save =
@@ -334,12 +336,12 @@ translateExpr bname bb ie save =
                                                   t3 ptrFunction)
                                  bb4
         (bb6, (t5, thisReg)) <- if (fctype == (head x))
-          then return (bb''', (fctype ,fcreg))
+          then return (bb5, (fctype ,fcreg))
           else emplaceFCRValue' (BitCast (head x) fctype fcreg) bb5
 
         (bb7, args) <- foldlM
           (\(bb, acc) ie -> BiFunctor.second (:acc) <$> translateExpr' bb ie True)
-          (bb,[])
+          (bb6,[])
           args
 
         emplaceFCRValue' (FunCallDynamic retType loadedFunction ((t5, thisReg):reverse args))
@@ -420,21 +422,16 @@ translateInstr name bb stmt = case stmt of
         withOpenBlock Cond $ \name -> do
         labels <- generateLabels 3
         let
-            ascmd = md
+            ascmd = map fst md
             vars = mapMaybe (\case
-                                Tr.IVar s -> Just s
-                                Tr.IMember iv s -> Nothing
-                                Tr.IBracketOp s ie' -> Nothing ) md
+                                (Tr.IVar s, recursive) -> if recursive then Nothing else Just s
+                                (Tr.IMember iv s, _) -> Nothing
+                                (Tr.IBracketOp s ie', _) -> Nothing ) md
 
-            classLValues = mapMaybe (\case
-                                Tr.IVar s -> Nothing
-                                il@(Tr.IMember iv s) -> Just il
-                                Tr.IBracketOp s ie' -> Nothing) md
             [postLabel, successLabel, failureLabel] = labels
             successEt = Et successLabel
             failureEt = Et failureLabel
 
-        ilValuesToReset <- mapM getILValue classLValues
 
         (cb, jr) <- withOpenBlock Check (\name -> (do
                                                       (bb, (_, reg)) <- translateExpr name bbNew ie True
@@ -453,7 +450,7 @@ translateInstr name bb stmt = case stmt of
                                            fVals <- mapM getVar vars
                                            let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
                                            return (fVals, bbBuildNamed sbb' name))
-
+        mapM_ flushDynamicRegister md
         pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
                                                  pbb <- phi (zip vars (zip sVals fVals)) successEt failureEt
                                                  return (bbBuildNamed pbb name))
@@ -461,26 +458,18 @@ translateInstr name bb stmt = case stmt of
   Tr.IWhile ie ib (Tr.MD md) -> withOpenBlock While $ \wname -> do
     labels <- generateLabels 4
     let [postEtStr, checkEtStr, successEndStr, epilogueEndStr] = labels
-        ascmd = md
+        ascmd = map fst md
         vars = mapMaybe (\case
                                 Tr.IVar s -> Just s
                                 Tr.IMember iv s -> Nothing
-                                Tr.IBracketOp s ie' -> Nothing ) md
+                                Tr.IBracketOp s ie' -> Nothing ) (map fst md)
 
-        classLValues = mapMaybe (\case
-                                Tr.IVar s -> Nothing
-                                il@(Tr.IMember iv s) -> Just il
-                                Tr.IBracketOp s ie' -> Nothing) md
-
-    ilValuesToReset <- mapM getILValue classLValues
     oldVals <- mapM getVar vars
     reg_ft <- preallocRegisters (zip vars (map fst oldVals))
+
+    mapM_ flushDynamicRegister md
     setVars vars (map fst reg_ft)
-
-
-    mapM_ (\(fctype, reg) -> modify $ Fcs.clearRValue (FCLoad (derefencePointerType fctype) fctype reg))
-      ilValuesToReset
-
+    
     (sVals, sb) <- withOpenBlock Success $
       \name ->
         withProtectedVars ascmd $ do
@@ -510,8 +499,6 @@ translateInstr name bb stmt = case stmt of
       put fstate'
       return (bbBuildNamed bb name)
 
-
-
     return $ bbaddBlock (FCNamedSBlock epilogueEndStr [] ()) (bbaddBlock (FCWhileBlock wname pb cb jr sb epilogueEndStr ()) bb)
     where
       preallocRegisters :: [(String, FCType)] -> FCCompiler [(FCRegister, FCType)]
@@ -527,6 +514,24 @@ translateInstr name bb stmt = case stmt of
   Tr.ISExp ie -> fst <$> translateExpr' bb ie False
   Tr.IStmtEmpty -> return bb
   where
+    flushDynamicRegister :: (Tr.ILValue, Bool) -> FCCompiler ()
+    flushDynamicRegister  = error . show
+      -- \case
+      -- (iv, True)  -> do
+      --   mlval<- getILValue iv
+      --   case mlval of 
+      --     Nothing -> return ()
+      --     Just (_, reg) -> modify $ Fcs.registerToDynamicRec reg
+      -- (iv, False) -> do
+      --   case iv of
+      --     Tr.IVar s -> return ()
+      --     _ -> do
+      --       mlval <- getILValue iv
+      --       case mlval of
+      --         Just (ftype, freg) -> case ftype of
+      --           FCPointer ft -> modify (Fcs.clearRValue (FCLoad ft ftype freg))
+      --           _ -> error $ show (ftype, freg)
+      --         Nothing -> return ()
     translateIItem' = flip $ translateIItem name
     translateExpr' = translateExpr name
     translateInstr' = translateInstr name bb
@@ -586,8 +591,7 @@ translateIClasses :: [Tr.IClass] -> FCCompiler [FCClass]
 translateIClasses = mapM translateIClass
 
 compileProg :: Tr.IProgram  -> FCProg
-compileProg (Tr.IProgram ifuns iclass classEnv) = let
-  funMetadata = Tr.functionMetaDataNew ifuns
+compileProg (Tr.IProgram ifuns iclass classEnv funMetadata) = let
   _usedExternals = foldr (\r -> (if fst r `DS.member` Tr.usedExternal funMetadata
                                 then (r:)
                                 else id))
@@ -667,7 +671,7 @@ emplaceFCRValue rvalue bb = do
 askForFieldType :: String -> String -> FCCompiler FCType
 askForFieldType className fieldName= do
   let errorNoClass = ((error $ "No class " ++ className ++" in SENV.") `fromMaybe`)
-      errorNoField = fromMaybe (error $ "No field " ++ fieldName ++ " for class className")
+      errorNoField = fromMaybe (error $ "No field " ++ fieldName ++ " for class " ++ className)
   x <- asks $ errorNoField . DL.lookup fieldName . Fce.fields . errorNoClass . Fce.getClassData className
   return (convert x)
 

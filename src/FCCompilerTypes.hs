@@ -41,7 +41,7 @@ universalPointer = FCPointer (Class "")
 data FCControlFlowOp = Jmp
 
 data FCUnaryOperator = Neg | BoolNeg
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 
 data FCType = Int | Bool | DynamicStringPtr | Void | ConstStringPtr Int |  FCPointer FCType |
@@ -50,7 +50,7 @@ data FCType = Int | Bool | DynamicStringPtr | Void | ConstStringPtr Int |  FCPoi
 
 data FCBinaryOperator = Add | Sub | Div | Mul | Mod | LShift | RShif | ByteAnd | ByteOr | ByteXor |
                         BoolAnd | BoolOr | BoolXor | Le | Equ | Neq | Lth | Gth | Ge
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 data FCOperatorType = FArithmetic | FBoolean
 
@@ -78,7 +78,7 @@ binOpType x = case x of
 
 data FCRegister = VoidReg | Reg String | ConstString Int | LitInt Int
                 | LitBool Bool | Et String | FCNull FCType
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 type PhiFrom = FCRegister
 type PhiValue = FCRegister
@@ -105,7 +105,7 @@ data FCRValue = FunCall FCType String [(FCType, FCRegister)] |
                 FCLoad FCType FCType FCRegister |
                 FCStore FCType FCRegister FCType FCRegister |
                 FCSizeOf FCType 
-  deriving (Eq, Ord)
+  deriving (Eq, Ord, Show)
 
 type FCInstr = (FCRegister, FCRValue)
 
@@ -233,7 +233,7 @@ fCRValueType x = case x of
   FCStore ft fr ft' fr' -> Void
   FCSizeOf ft -> Int
   GetMethodTable className _ _ -> FCPointer $ FCPointer $ FCMethodsTable className
-  GetMethod ft _ _ _ -> FCPointer ft
+  GetMethod ft _ _ _ -> FCPointer $ FCPointer ft
   FunCallDynamic ft _ _ -> ft
   GetElementPtr ft _ _ _ -> ft
   GetElementPtrArr ft _ _ _  -> ft

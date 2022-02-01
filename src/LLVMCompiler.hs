@@ -9,12 +9,13 @@ import FCCompiler (bbaddInstr)
 import Control.Monad.State.Strict (modify, State, MonadState(put, get), execState)
 import Control.Monad.Reader (ReaderT, ask, asks, local, runReaderT)
 import Control.Monad.State (unless)
+import qualified Control.Monad
 
 import Data.List as DL
 import Numeric(showHex)
 import qualified Control.Arrow as BiFunctor
 import Data.Maybe (fromMaybe, isNothing, fromJust)
-import Data.Char (ord)
+import Data.Char (ord, GeneralCategory (Control))
 
 import LLVMCompiler.FunctionTable (FunctionTable, MethodInfo(..))
 import qualified LLVMCompiler.FunctionTable as FT
@@ -74,7 +75,15 @@ llEnvFieldMapping className fieldName env = let
   fieldIndex
 
 llEnvMethodMapping :: String -> String -> LLVMEnv -> Int
-llEnvMethodMapping = undefined
+llEnvMethodMapping className fieldName env =
+  let
+    sEnv = env
+    classData = error ("Class " ++ className ++ " not found") `fromMaybe` DM.lookup className sEnv
+    methodIndex = error ("No mapping of method " ++ fieldName ++ "for class " ++ className)
+                  `fromMaybe`
+                  FT.lookupMethod  fieldName  (fromJust $ llFunctionTable classData)
+  in
+    methodIndex
 
 vtablename = "_vtable"
 
@@ -282,7 +291,7 @@ instance Outputable FCRValue where
     ++ output s ++ ", label " ++ output f
   output (FunCall rtype fname args) = "call " ++ outputFun fname rtype args
   output (FunCallDynamic rt reg args) = "call " ++ output rt ++ " " ++ output reg
-    ++ "("++ intercalate ", " (map (\(x, y) -> output x ++" "++ output y) args) ++ ")" 
+    ++ "("++ intercalate ", " (map (\(x, y) -> output x ++" "++ output y) args) ++ ")"
   output GetField {} = error "This one is internal."
   output (GetElementPtr ft x fc r) = "getelementptr " ++ output (derefencePointerType fc) ++ ", "
     ++ output fc ++ " " ++ output r ++ ", i32 0, i32 " ++ show x
@@ -374,10 +383,14 @@ instance Outputable LLVMModule where
 compile :: FCProg -> String
 compile (FCProg exts consts funs classes) =
   output (LLVMModule exts consts (map f
-                                  funs) llvmClasses llvmVTables)
+                                  funs') llvmClasses llvmVTables)
   where
     (llvmStructEnv, llvmClasses, llvmVTables) = toLLVMStructs classes
     llvmEnv = llvmStructEnv
+    funs' = funs ++ intercalate [] (map g classes)
+    g :: FCClass -> [FCFun]
+    g (FCClass s m_s x0 x1 ffs) =
+      map (\case FCFun' str ft x2 fb -> FCFun' (FT.llvmMethodName s str) ft x2 fb ) ffs
     f :: FCFun -> LLVMFunDecl
     f (FCFun' fname ftype args iblock) = LLVMFunDecl fname ftype args
       (llvmBuildBuilder llvmEnv ftype $ toLLVMBuilder llvmEnv [] iblock)

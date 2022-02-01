@@ -15,7 +15,7 @@ type IType = LType
 universalReference :: LType
 universalReference = LClass ""
 
-data MetaData = MD {modVars :: [ILValue]}
+data MetaData = MD {modVars :: [(ILValue, Bool)]}
 
 instance Show MetaData where
   show (MD md) = "(MD $ DS.fromList " ++ show md ++ ")"

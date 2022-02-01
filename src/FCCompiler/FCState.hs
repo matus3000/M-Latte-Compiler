@@ -22,7 +22,8 @@ module FCCompiler.FCState (FCState(fcsConstants),
                            lookupConstString,
                            addConstString,
                            allocateRegister,
-                           setRegister
+                           setRegister,
+                           registerToDynamicRec
                            ) where
 import qualified Data.Set as DS
 import qualified Data.Map.Strict as DM
@@ -30,15 +31,16 @@ import qualified Data.List as DL
 import qualified Control.Arrow as BiFunctor
 import Control.Monad (join)
 
-import FCCompilerTypes (FCRValue (FCFunArg), FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr))
+import FCCompilerTypes (FCRValue (FCFunArg, GetField, GetElementPtr, FCLoad), FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr, FCPointer))
 import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, fromMaybe)
 
   -- Internal Types --
 type FCVarEnv = VarEnv String FCRegister
-data FCRegMap = FCRegMap {_regMap::DM.Map FCRegister FCRValue,
-                          _rvalueMap:: VE.VarEnv FCRValue FCRegister}
+data FCRegMap = FCRegMap {_regMap :: DM.Map FCRegister FCRValue,
+                          _rvalueMap :: VE.VarEnv FCRValue FCRegister,
+                          _regToPtrRegMap :: DM.Map FCRegister [FCRegister]}
 type SSARegisterAllocator = Int
 data LabelAllocator = LA {laNextId::Int, laNameRequired::Bool}
 
@@ -76,14 +78,15 @@ ssaNext :: SSARegisterAllocator -> (SSARegisterAllocator, Int)
 ssaNext x = (x+1, x)
 
 regmapOpenConditionalBlock :: FCRegMap -> FCRegMap
-regmapOpenConditionalBlock (FCRegMap m1 m2) = FCRegMap m1 (VE.openClosure m2)
-regmapCloseConditionalBlock (FCRegMap m1 m2) = FCRegMap m1 (VE.closeClosure m2)
+regmapOpenConditionalBlock (FCRegMap m1 m2 m3) = FCRegMap m1 (VE.openClosure m2) m3
+regmapCloseConditionalBlock (FCRegMap m1 m2 m3) = FCRegMap m1 (VE.closeClosure m2) m3
 regmapLookupRegister :: FCRegister -> FCRegMap -> Maybe FCRValue
 regmapLookupRegister x regmap = case x of
   Reg{} -> DM.lookup x (_regMap regmap)
   _ -> error "Real undefined behaviour"
 
-fcRegMapNew = FCRegMap DM.empty (VE.openClosure VE.newVarEnv)
+fcRegMapNew :: FCRegMap
+fcRegMapNew = FCRegMap DM.empty (VE.openClosure VE.newVarEnv) DM.empty
 
 fcsPutVenv :: FCVarEnv -> FCState -> FCState
 fcsPutVenv ve' (FCState ve ssa rm c b) = FCState ve' ssa rm c b
@@ -109,10 +112,11 @@ allocateRegister :: FCType -> FCState -> (FCState, FCRegister)
 allocateRegister fctype fcstate = let
   x  = ($ fcsRegMap fcstate) BiFunctor.*** ($ fcsRegMap fcstate)
   (regmap, rvaluemap) = x (_regMap, _rvalueMap)
+  regreg = _regToPtrRegMap $ fcsRegMap fcstate
   (fcstate', r) = BiFunctor.first (`fcsPutSSAAloc` fcstate ) (ssaNext (fcsSSAAloc fcstate))
   reg = Reg (show r)
   fcstate'' = fcsPutRegMap (FCRegMap (DM.insert reg (FCFunArg fctype "" (-1)) regmap)
-                             rvaluemap)
+                             rvaluemap regreg)
               fcstate'
   in
   (fcstate'', reg)
@@ -126,14 +130,15 @@ setRegister reg newvalue fcstate = case DM.lookup reg $ _regMap (fcsRegMap fcsta
         regmap = DM.insert reg newvalue (_regMap (fcsRegMap fcstate))
         rvalmap = VE.declareVar newvalue reg (_rvalueMap $ fcsRegMap fcstate)
       in
-        fcsPutRegMap (FCRegMap regmap rvalmap) fcstate
+        fcsPutRegMap (FCRegMap regmap rvalmap (_regToPtrRegMap $ fcsRegMap fcstate)) fcstate
       else
       error "Types are not matching"
     _ -> error "You can set allocateRegister only once"
 
 addFCRValue :: FCRValue -> OnRValueConflict -> FCState -> (FCState, Either FCRegister FCRegister)
 addFCRValue fcrval onconflict fcstate = let
-  (regmap, rvaluemap) = (_regMap (fcsRegMap fcstate), _rvalueMap (fcsRegMap fcstate))
+  (regmap, rvaluemap, regreg) = (_regMap (fcsRegMap fcstate), _rvalueMap (fcsRegMap fcstate),
+                                 _regToPtrRegMap (fcsRegMap fcstate))
   ssa = fcsSSAAloc fcstate
   in
    if fCRValueType fcrval == Void then (fcstate, Right VoidReg)
@@ -146,8 +151,12 @@ addFCRValue fcrval onconflict fcstate = let
           RegisterToRValue -> (DM.insert r fcrval regmap, rvaluemap)
           TwoWay -> (DM.insert r fcrval regmap, VE.declareVar fcrval r rvaluemap)
           RValueToReg -> (regmap, VE.declareVar fcrval r rvaluemap)
+        regreg' = case fcrval of
+          GetField ft s ft' fr -> DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
+          GetElementPtr ft n ft' fr -> DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
+          _ -> regreg
         fstate' =  fcsPutSSAAloc ssa' $
-                   fcsPutRegMap (FCRegMap regmap' rvaluemap')
+                   fcsPutRegMap (FCRegMap regmap' rvaluemap' regreg')
                    fcstate
         in
         (fstate', Right r)
@@ -170,7 +179,42 @@ getRegisterType reg fstate = case reg of
 
 
 clearRValue :: FCRValue -> FCState -> FCState
-clearRValue = undefined
+clearRValue fcrvalue fcs = let
+  _fcsRegMap = fcsRegMap fcs
+  rvalmap = _rvalueMap $ fcsRegMap fcs
+  rvalmap' = case VE.lookupVar fcrvalue rvalmap of
+    Nothing -> error $ "Development - no mapping for :" ++ show fcrvalue
+    Just s -> VE.undeclareVar fcrvalue rvalmap
+  in
+  fcsPutRegMap (FCRegMap (_regMap _fcsRegMap) rvalmap' (_regToPtrRegMap _fcsRegMap)) fcs
+
+registerToDynamicRec :: FCRegister -> FCState -> FCState
+registerToDynamicRec reg fcs = let
+  regmap = fcsRegMap fcs
+  registermap = _regMap regmap
+  regregmap = _regToPtrRegMap regmap
+  subregisters :: Maybe [(Maybe FCType, FCRegister)]
+  subregisters = map (\x -> (fCRValueType <$>DM.lookup x registermap, x)) <$> DM.lookup reg regregmap
+  in
+  case subregisters of
+    Nothing -> fcs
+    Just x0 ->
+      let
+         f :: (VE.VarEnv FCRValue FCRegister, [FCRegister]) -> (Maybe FCType, FCRegister) ->
+              (VE.VarEnv FCRValue FCRegister, [FCRegister])
+         f _1@(venv, regList) (Just fctype, x) =
+           case fctype of
+             FCPointer f -> let
+               fcload = FCLoad f fctype x
+               in
+               case VE.lookupVar fcload venv of
+                 Just reg -> (VE.undeclareVar fcload venv, reg:regList)
+                 _ -> _1
+             _ -> _1
+         f _ (Nothing, x) = error $ "No FCRValue for" ++ show x
+         (rvalueMap', y) = foldl f (_rvalueMap regmap, []) x0
+      in
+        foldl (flip registerToDynamicRec) (fcsPutRegMap (FCRegMap registermap rvalueMap' regregmap) fcs) y
 
 setVar :: String -> FCRegister -> FCState -> FCState
 setVar var reg = fcsModifyVenv (VE.setVar var reg)

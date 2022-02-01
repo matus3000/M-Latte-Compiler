@@ -78,18 +78,21 @@ runCompiler p s =
             let fccode = compileProg tcode
                 code  = LLVM.compile fccode
             putStrLnStderr "OK"
-            if test then showStructureData tcode
+            if test then  showClasses tcode
               else putStr code
             exitSuccess
   where
     ts = myLexer s
-    showMetaData :: IProgram -> IO ()
-    showMetaData tcode = do
-      let (IProgram z v se) = tcode
-          x = usedExternal $ functionMetaDataNew z
-      print x
+    showClasses :: IProgram -> IO ()
+    showClasses tcode = do
+      let (IProgram z v se _) = tcode
+      print v
+    -- showMetaData :: IProgram -> IO ()
+    -- showMetaData tcode = do
+    --   let (IProgram z v se ex) = tcode
+    --   print ex
     showStructureData tcode = do
-      let (IProgram z v se) = tcode
+      let (IProgram z v se _) = tcode
       print se
 runFile :: ParseFun Lt.Program -> FilePath  -> IO()
 runFile p f = readFile f >>= runCompiler p

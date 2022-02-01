@@ -20,7 +20,6 @@ module Translator(
     ILValue(..),
     Reference,
     stmtsToInternal,
-    functionMetaDataNew,
     FunctionMetadata(..),
     IProgram(..),
     IClass(..),
@@ -50,7 +49,7 @@ import qualified Control.Arrow as Data.BiFunctor
 
 import VariableEnvironment(CVariableEnvironment(..), VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
-import Data.List (foldl')
+import Data.List (foldl', intercalate)
 
 import Translator.Definitions
 import Translator.TranslatorEnvironment
@@ -373,10 +372,10 @@ f (EInternalCast ma _type expr) = do
         LClass s -> s
         _ -> undefined
   (itype, ivalue, iexpr') <- f expr
-  case ivalue of
-    OwningReference n -> castClassUnsafe n className
-    _ -> return ()
-  return (ltype, ivalue, iexpr')
+  -- case ivalue of
+  --   OwningReference n -> castClassUnsafe n className
+  --   _ -> return ()
+  return (itype, ivalue, iexpr')
 f (ENull _) = return (universalReference, Null, INull)
 f (ENewClass pos parserType) = do
   let itype = convertType parserType
@@ -633,14 +632,13 @@ stmtsToInternal ((CondElse pos expr stmt1 stmt2 md):rest) =
         (iblock1, returnBoolean1) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt1])
         (iblock2, returnBoolean2) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt2])
         setLvaluesToRuntime md
-        let icond = ICondElse iexpr iblock1 iblock2 (MD $ map simpleLvalueToInernal (map fst md))
+        let icond = ICondElse iexpr iblock1 iblock2 (MD $ map (BiFunctor.first simpleLvalueToInernal) md)
         if returnBoolean1 && returnBoolean2
           then return ([icond], True)
           else BiFunctor.first (icond:) <$> stmtsToInternal rest
 -- Legacy --
 stmtsToInternal ((While pos expr stmt md):rest) = do
   let ascmd =  md
-
   setLvaluesToRuntime md
 
   (itype, ivalue, iexpr) <- exprToInternal expr
@@ -649,7 +647,7 @@ stmtsToInternal ((While pos expr stmt md):rest) = do
     (IValueBool False) -> stmtsToInternal rest
     _ -> do
       (iblock, returnBoolean) <- withinConditionalBlock $ blockToInternal (VirtualBlock [stmt])
-      BiFunctor.first (IWhile iexpr iblock (MD $ map simpleLvalueToInernal (map fst md)):) <$> stmtsToInternal rest
+      BiFunctor.first (IWhile iexpr iblock (MD $ map (BiFunctor.first simpleLvalueToInernal) md):) <$> stmtsToInternal rest
   where
     makeDynamic :: [String] -> VariableState -> VariableState
     makeDynamic s venv = foldl (\venv (key, val) -> VE.setVar key val venv) venv (zip s t)
@@ -696,6 +694,7 @@ topDefToInternal ms fDef fEnv sEnv = let
   x = do
     withOpenBlock $ do
       mapM_ (\(id,ltype) -> declareVariable (0,0) id (ltype, RunTimeValue)) funArgs
+      castThis ms
       blockToInternal block
   res = evalTranslator tsEnv newTranslatorState x
   in
@@ -703,11 +702,19 @@ topDefToInternal ms fDef fEnv sEnv = let
       x <- res
       unless (snd x || retType == LVoid) (throwError $ SemanticError (getPosition fDef) (NoReturnValue retType))
       return $ IFun funName retType funArgs (fst x)
+  where
+    castThis :: Maybe String -> Translator ()
+    castThis = \case
+      Nothing -> return ()
+      Just s -> do
+        (itype, ivalue) <- getVariable (-1,-1)  "this"
+        let (OwningReference ref) = ivalue
+        castClassUnsafe ref s
 
 classDefToInternal :: ClassDef -> FunctionEnvironment -> StructureEnvironment -> CompilerExcept IClass
 classDefToInternal cdef fEnv sEnv =
   do
-  translatedMethods <- mapM ((\x -> topDefToInternal (Just className) x fEnv sEnv) . methodToTopDef) cmethods
+  translatedMethods <- mapM (methodToIFun fEnv sEnv)  cmethods
   return $ IClass className translatedMethods
   where
     className = case cdef of
@@ -717,29 +724,32 @@ classDefToInternal cdef fEnv sEnv =
     cmethods = case cdef' of
       ClassDef ma ind cmds cmds' -> cmds'
       ClassDefExtends ma id id' cmds cmds' -> cmds'
-
     poserror = Just $ Prelude.error "You should not derefernce it"
-    classType = (Class (Just (-1,-1)) (Ident className))
-    methodToTopDef :: ClassMethodDef -> TopDef
-    methodToTopDef (MethodDecl ma ty id@(Ident methodName) args iblock) = -- Prelude.error $ show ty
-      FnDef ma ty id args' iblock'
+    methodToIFun ::FunctionEnvironment -> StructureEnvironment-> ClassMethodDef -> CompilerExcept IFun
+    methodToIFun fEnv sEnv method@(MethodDecl ma ty id@(Ident methodName) args iblock) =
+      addThisCast <$> topDefToInternal (Just className) (methodToTopDef method) fEnv sEnv
       where
         methodAnnouncer :: String
         methodAnnouncer = (fromJust . DM.lookup methodName . TE.methodsParents . fromJust)
           (DM.lookup className (TE.classMap sEnv))
-        addThisArg :: [Arg] -> [Arg]
-        addThisArg = (thisArg methodAnnouncer :)
+        addThisCast :: IFun -> IFun
+        addThisCast ifun@(IFun s l x b) = if
+          className == methodAnnouncer then ifun
+          else
+            let (IBlock stmts) = b
+                cast = IDecl [IItem "this" $ ICast (LClass className) (ILValue (IVar "this"))]
+            in
+              IFun s l x (IBlock (cast:stmts))
+        methodToTopDef :: ClassMethodDef -> TopDef
+        methodToTopDef (MethodDecl ma ty id@(Ident methodName) args iblock) = -- Prelude.error $ show ty
+          FnDef ma ty id args' iblock
           where
-            thisArg :: String -> Arg
-            thisArg name =  Lt.Arg (Just (-1,-1)) (Class (Just (-1,-1)) (Ident name)) (Ident "this")
-        thisLvalue = Lt.LVar poserror (Ident "this")
-        internalConversion = Lt.EInternalCast poserror classType
-          (Lt.EVar poserror thisLvalue)
-        dummyAss = Decl poserror classType [(Lt.Init Nothing (Ident "this") (internalConversion))]
-        args' = addThisArg args
-        iblock' = case iblock of
-          Block ma' ess -> Block ma' (dummyAss:ess)
-          VirtualBlock ess -> VirtualBlock (dummyAss:ess)
+            addThisArg :: [Arg] -> [Arg]
+            addThisArg = (thisArg methodAnnouncer :)
+              where
+                thisArg :: String -> Arg
+                thisArg name =  Lt.Arg (Just (-1,-1)) (Class (Just (-1,-1)) (Ident name)) (Ident "this")
+            args' = addThisArg args
 assertMain :: FunctionEnvironment -> CompilerExcept ()
 assertMain fEnv =
   let
@@ -749,10 +759,11 @@ assertMain fEnv =
       Just (LInt, _) -> return ()
       _ -> throwError $ SemanticError (0,0) NoMain
 
-data IProgram = IProgram [IFun] [IClass] StructureEnvironment
+data IProgram = IProgram [IFun] [IClass] StructureEnvironment FunctionMetadata
 
 data IClass = IClass {icName :: String,
                      icDefinedMethods :: [IFun]}
+  deriving (Show)
 
 programToInternal :: Program -> CompilerExcept IProgram
 programToInternal program@(Program _ topDefs classDefs) =
@@ -770,7 +781,8 @@ programToInternal program@(Program _ topDefs classDefs) =
       assertMain fEnv
       ifuns <- mapM (\x -> topDefToInternal Nothing x fEnv sEnv) topDefs
       iclasses <- mapM (\x -> classDefToInternal x fEnv sEnv) classDefs
-      return $ IProgram ifuns iclasses sEnv
+      let fm = functionMetaDataNew ifuns iclasses
+      return $ IProgram ifuns iclasses sEnv fm
 
 class Castable a b where
   cast_ :: a -> b
@@ -795,10 +807,6 @@ errorDivisonByZero :: MulOp -> Translator ()
 errorDivisonByZero op = do
   (_, _, pos, _) <- asks TE.getContext
   throwError $ SemanticError pos (DivisionByZero (getPosition op))
--- assertDivision :: MulOp -> IExpr -> Compiler FunTranslationEnvironment ()
--- assertDivision op@(Div pos) (ILitInt 0) = errorDivisonByZero op
--- assertDivision op@(Mod pos) (ILitInt 0) = errorDivisonByZero op
--- assertDivision _ _= return ()
 
 
 instance TypedBiOperator MulOp IType where
@@ -891,7 +899,7 @@ getCalledFunctions (IFun _ _ _ iblock) =
       INew {} -> DS.insert "_new" set
       INull {} -> set
       ICast {} -> set
-      IMethod {} -> DS.insert "error" set
+      IMethod {} -> set
     getCalledFunctionsItems :: [IItem] -> DS.Set String ->DS.Set String
     getCalledFunctionsItems items set = foldl (flip x) set items
       where
@@ -920,49 +928,11 @@ containsPossiblyEndlessLoop (IFun _ _ _ iblock) =
       ISExp ie -> False
       IStmtEmpty -> False
 
--- _getNamesOfStateChangingFunctions :: DS.Set String -> [IFun] -> DS.Set String
--- _getNamesOfStateChangingFunctions seed ifuns = let
---   x = map (const DS.empty) ifuns
---   y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
-
---   initDepMap = foldl (\map (IFun fname _ _ _) -> DM.insert fname DS.empty map) DM.empty ifuns
---   buildDepMap :: [(String, DS.Set String)] -> DM.Map String (DS.Set String)
---   buildDepMap list = foldr f initDepMap list
---     where
---           f :: (String, DS.Set String) -> DM.Map String (DS.Set String) -> DM.Map String (DS.Set String)
---           f (fname, set) map = foldl (\map pname -> DM.insert
---                                                     pname
---                                                     (DS.insert fname (DS.empty `fromMaybe`DM.lookup pname map)) map)
---                                map set
---   loopingFunctions = foldl' (\set ifun@(IFun fname _ _ _) ->
---                                    if containsPossiblyEndlessLoop ifun
---                                    then DS.insert fname set
---                                    else set) DS.empty ifuns
---   buildDynamic :: DM.Map String (DS.Set String) -> DS.Set String -> DS.Set String -> DS.Set String
---   buildDynamic map emplaced set = if null emplaced then set else
---     let  emplaced' = foldl (\emplaced' name ->
---                                   DS.union emplaced'
---                                   (DS.difference (DS.empty `fromMaybe` DM.lookup name map) set))
---                          DS.empty emplaced
---     in
---       buildDynamic map emplaced' (DS.union emplaced' set)
---   _depMap = buildDepMap y
---   _externalDyn = ["printInt", "printString", "error", "readInt", "readString"]
---   _externalFun = ["printInt", "printString", "error", "readInt", "readString",
---                    "_strconcat", "_strle", "_strlt", "_strge", "_strgt", "_streq",
---                    "_strneq", "_new"]
---   _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
---   _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
---   _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
---                           foldl (\set pair -> set `DS.union` snd pair) DS.empty y
---   in
---     _dynamicFunctions
-
-
-functionMetaDataNew :: [IFun] -> FunctionMetadata
-functionMetaDataNew ifuns =
-  let x = map (const DS.empty) ifuns
-      y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
+functionMetaDataNew :: [IFun]->[IClass] -> FunctionMetadata
+functionMetaDataNew ifuns iclass=
+  let y = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun)) ifuns
+      ys = map (\fun@(IFun fname _ _ _) -> (fname, getCalledFunctions fun))
+        (concatMap (\cl@(IClass _ m) -> m) iclass)
 
       initDepMap = foldl (\map (IFun fname _ _ _) -> DM.insert fname DS.empty map) DM.empty ifuns
       buildDepMap :: [(String, DS.Set String)] -> DM.Map String (DS.Set String)
@@ -993,7 +963,7 @@ functionMetaDataNew ifuns =
       _externalFunDSet = DS.union loopingFunctions (DS.fromList _externalDyn)
       _dynamicFunctions = buildDynamic _depMap _externalFunDSet _externalFunDSet
       _somehowCalledFun = DS.intersection (DS.fromList _externalFun) $
-                          foldl (\set pair -> set `DS.union` snd pair) DS.empty y
+                          foldl (\set pair -> set `DS.union` snd pair) DS.empty (y ++ ys)
       _mutargs :: DM.Map String [Bool]
       _mutargs = DM.fromList (foldl (\result (IFun fname _ args _) ->
                                     (fname, map (\(_, ltype) ->

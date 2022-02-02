@@ -78,11 +78,14 @@ runCompiler p s =
             let fccode = compileProg tcode
                 code  = LLVM.compile fccode
             putStrLnStderr "OK"
-            if test then  showClasses tcode
+            if test then  showFuns tcode
               else putStr code
             exitSuccess
   where
     ts = myLexer s
+    showFuns  :: IProgram -> IO()
+    showFuns tcode =let (IProgram z v se _) = tcode in
+        print z
     showClasses :: IProgram -> IO ()
     showClasses tcode = do
       let (IProgram z v se _) = tcode

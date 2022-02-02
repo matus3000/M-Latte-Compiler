@@ -84,6 +84,7 @@ transType x = case x of
 
 transExpr :: Show a => Latte.Abs.Expr' a -> Result
 transExpr x = case x of
+  Latte.Abs.ECast _ type_ expr -> failure x
   Latte.Abs.EVar _ lvalue -> failure x
   Latte.Abs.ELitInt _ integer -> failure x
   Latte.Abs.ELitTrue _ -> failure x

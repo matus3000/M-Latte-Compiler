@@ -49,6 +49,7 @@ preprocessMethodsInClasses senv classdef = let
       ERel ma ex ro ex' -> ERel ma (e ex) ro (e ex')
       EAnd ma ex ex' -> EAnd ma (e ex) (e ex')
       EOr ma ex ex' ->  EOr ma (e ex) (e ex')
+      ECast ma t ex -> ECast ma t (e ex)
     i :: Item -> Item
     i = \case
       NoInit ma id -> NoInit ma id

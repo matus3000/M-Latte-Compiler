@@ -230,7 +230,7 @@ translateILValue bb ilvalue bool = do
       (fctype, fcreg) <- getVar name
       className <- case (fctype, fcreg) of
         (FCPointer (Class className), Reg _) -> return className
-        _ -> error $ "Internal Error : Undefined behaviour " ++ (show fctype)
+        _ -> error $ "Internal Error : Undefined behaviour " ++ (show ilvalue) ++ " " ++ show (fctype, fcreg)
       memberPointerType <- FCPointer <$> askForFieldType className member
       (bb', returnReg) <- emplaceFCRValue (GetField memberPointerType member fctype fcreg) bb
       return (bb', (memberPointerType, returnReg))
@@ -426,12 +426,11 @@ translateInstr name bb stmt = case stmt of
         withOpenBlock Cond $ \name -> do
         labels <- generateLabels 3
         let
-            ascmd = map fst md
             vars = mapMaybe (\case
-                                (Tr.IVar s, recursive) -> if recursive then Nothing else Just s
+                                (Tr.IVar s, recursive) ->
+                                  if recursive then Nothing else Just s
                                 (Tr.IMember iv s, _) -> Nothing
                                 (Tr.IBracketOp s ie', _) -> Nothing ) md
-
             [postLabel, successLabel, failureLabel] = labels
             successEt = Et successLabel
             failureEt = Et failureLabel
@@ -441,19 +440,20 @@ translateInstr name bb stmt = case stmt of
                                                       (bb, (_, reg)) <- translateExpr name bbNew ie True
                                                       return (bbBuildAnonymous bb, reg)))
 
-        (sVals, sb) <- withPrenamedOpenBlock successLabel Success (\name ->
-                                                     withProtectedVars ascmd $ do
-                                                      sbb <- translateBlock name ib bbNew
-                                                      sVal <- mapM getVar vars
-                                                      let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
-                                                      return (sVal, bbBuildNamed sbb' name))
+        (sVals, sb) <- withPrenamedOpenBlock successLabel Success 
+          (\name -> do
+              sbb <- translateBlock name ib bbNew
+              sVal <- mapM getVar vars
+              let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
+              return (sVal, bbBuildNamed sbb' name))
 
-        (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure (\name ->
-                                           withProtectedVars ascmd $ do
-                                           sbb <- translateBlock name ib' bbNew
-                                           fVals <- mapM getVar vars
-                                           let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
-                                           return (fVals, bbBuildNamed sbb' name))
+        (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure
+          (\name -> do
+              sbb <- translateBlock name ib' bbNew
+              fVals <- mapM getVar vars
+              let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
+              return (fVals, bbBuildNamed sbb' name))
+
         mapM_ flushDynamicRegister md
         pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do
                                                  pbb <- phi (zip vars (zip sVals fVals)) successEt failureEt
@@ -464,9 +464,10 @@ translateInstr name bb stmt = case stmt of
     let [postEtStr, checkEtStr, successEndStr, epilogueEndStr] = labels
         ascmd = map fst md
         vars = mapMaybe (\case
-                                Tr.IVar s -> Just s
-                                Tr.IMember iv s -> Nothing
-                                Tr.IBracketOp s ie' -> Nothing ) (map fst md)
+                            (Tr.IVar s, False) -> Just s
+                            (Tr.IVar s, True) -> Nothing
+                            (Tr.IMember iv s, _) -> Nothing
+                            (Tr.IBracketOp s ie', _) -> Nothing ) md
 
     oldVals <- mapM getVar vars
     reg_ft <- preallocRegisters (zip vars (map fst oldVals))
@@ -475,8 +476,7 @@ translateInstr name bb stmt = case stmt of
     setVars vars (map fst reg_ft)
     
     (sVals, sb) <- withOpenBlock Success $
-      \name ->
-        withProtectedVars ascmd $ do
+      \name -> do
         sbb <- translateBlock name ib bbNew
         sVal <- getVars vars
         let sbb' = bbaddInstr (VoidReg, jump successEndStr) sbb
@@ -524,8 +524,8 @@ translateInstr name bb stmt = case stmt of
       (iv, True)  -> do
         mlval<- getILValue iv
         case mlval of 
-          Nothing -> error "SFADFA"
-            -- return ()
+          Nothing -> 
+            return ()
           Just (_, reg) -> -- error $ show mlval
             modify $ Fcs.registerToDynamicRec reg
       (iv, False) -> do
@@ -561,11 +561,11 @@ translateFun (Tr.IFun s lt lts ib) = do
       dynamicFuns <- ask
       let
         optimize :: FCBlock -> FCBlock
-        optimize =
-          snd . removeDeadCode dynamicFuns DS.empty.
-          gcseOptimize dynamicFuns  .
-          snd . removeDeadCode dynamicFuns DS.empty
-        -- optimize=id
+        -- optimize =
+        --   snd . removeDeadCode dynamicFuns DS.empty.
+        --   gcseOptimize dynamicFuns  .
+        --   snd . removeDeadCode dynamicFuns DS.empty
+        optimize=id
         fbody = bbBuildAnonymous fbodyBB
         fbody' = optimize fbody
       return $ FCFun' {name = s, retType = convert lt, args = res, FCT.body = fbody'}
@@ -731,40 +731,64 @@ withOpenFunBlock s rt slts f = do
   return result
 
 
-openBlock :: BlockType -> FCCompiler ()
-openBlock bt = do
-  case bt of
-    FunBody -> error "OpenBlock FunBody"
-    Normal -> modify Fcs.openBlock
-    BoolExp -> return () -- modify Fcs.openBlock 
-    Cond -> return () -- modify Fcs.openBlock 
-    While -> return ()
-    Check -> modify Fcs.openConditionalBlock
-    Success -> modify Fcs.openConditionalBlock
-    Failure -> modify Fcs.openConditionalBlock
-    Post -> return ()
-    BTPlacceHolder -> error "OpenBlock PlaceHolder"
+-- openBlock :: BlockType -> FCCompiler ()
+-- openBlock bt = do
+--   case bt of
+--     FunBody -> error "OpenBlock FunBody"
+--     Normal -> modify Fcs.openBlock
+--     BoolExp -> return () -- modify Fcs.openBlock 
+--     Cond -> return () -- modify Fcs.openBlock 
+--     While -> return ()
+--     -- Check -> modify Fcs.openConditionalBlock
+--     -- Success -> modify Fcs.openConditionalBlock
+--     -- Failure -> modify Fcs.openConditionalBlock
+--     Post -> return ()
+--     BTPlacceHolder -> error "OpenBlock PlaceHolder"
 
-closeBlock :: BlockType -> FCCompiler ()
-closeBlock bt = do
-  case bt of
-    FunBody -> error "OpenBlock FunBody"
-    Normal -> modify Fcs.closeBlock
-    BoolExp -> return ()
-    Cond -> return ()
-    While -> return ()
-    Check ->  modify Fcs.closeConditionalBlock
-    Success -> modify Fcs.closeConditionalBlock
-    Failure ->  modify Fcs.closeConditionalBlock
-    Post -> return ()
-    BTPlacceHolder -> error "OpenBlock PlaceHolder"
+-- closeBlock :: BlockType -> FCCompiler ()
+-- closeBlock bt = do
+--   case bt of
+--     FunBody -> error "OpenBlock FunBody"
+--     Normal -> modify Fcs.closeBlock
+--     BoolExp -> return ()
+--     Cond -> return ()
+--     While -> return ()
+--     -- Check ->  modify Fcs.closeConditionalBlock
+--     -- Success -> modify Fcs.closeConditionalBlock
+--     -- Failure ->  modify Fcs.closeConditionalBlock
+--     Post -> return ()
+--     BTPlacceHolder -> error "OpenBlock PlaceHolder"
 
 withPrenamedOpenBlock :: String -> BlockType -> (String -> FCCompiler a )-> FCCompiler a
 withPrenamedOpenBlock bname bt f = do
-  openBlock bt
-  res <- f bname
-  closeBlock bt
-  return res
+  let with =case bt of
+        FunBody -> error ""
+        Normal -> withNormalBlock
+        BoolExp -> withNothingToDo
+        Cond -> withNothingToDo
+        While -> withNothingToDo
+        Check -> withNothingToDo
+        Success -> withConditionalBlock
+        Failure -> withConditionalBlock
+        Post -> withNothingToDo
+        BTPlacceHolder -> error ""
+  with $ f bname
+  where
+    withNormalBlock :: FCCompiler a -> FCCompiler a
+    withNormalBlock x = do
+      modify Fcs.openBlock
+      res <- x
+      modify Fcs.closeBlock
+      return res
+    withNothingToDo :: FCCompiler a -> FCCompiler a
+    withNothingToDo = id
+    withConditionalBlock :: FCCompiler a -> FCCompiler a
+    withConditionalBlock x = do
+      before <- get
+      result <- x
+      after <- get
+      put $ Fcs.applyConditionalStateChange before after
+      return result
 
 withOpenBlock :: BlockType -> (String -> FCCompiler a )-> FCCompiler a
 withOpenBlock bt f = do
@@ -790,27 +814,27 @@ withOpenBlock bt f = do
             put fstate'
             return label
 
-protectVariables :: [String] -> FCCompiler ()
-protectVariables vars = do
-  modify (Fcs.protectVars vars)
+-- protectVariables :: [String] -> FCCompiler ()
+-- protectVariables vars = do
+--   modify (Fcs.protectVars vars)
 
-protectVariablesWhile :: [String] -> FCCompiler ()
-protectVariablesWhile = error "protectVariablesWhile: undefined"
+-- protectVariablesWhile :: [String] -> FCCompiler ()
+-- protectVariablesWhile = error "protectVariablesWhile: undefined"
 
-endprotection :: FCCompiler ()
-endprotection = modify Fcs.endProtection
+-- endprotection :: FCCompiler ()
+-- endprotection = modify Fcs.endProtection
 
-withProtectedVars :: [Tr.ILValue] -> FCCompiler a -> FCCompiler a
-withProtectedVars lvals f = do
-  protectVariables vars
-  res <- f
-  endprotection
-  return res
-  where
-    vars = mapMaybe (\case
-      Tr.IVar s -> Just s
-      Tr.IMember iv s -> Nothing
-      Tr.IBracketOp s ie -> Nothing ) lvals
+-- withProtectedVars :: [Tr.ILValue] -> FCCompiler a -> FCCompiler a
+-- withProtectedVars lvals f = do
+--   protectVariables vars
+--   res <- f
+--   endprotection
+--   return res
+--   where
+--     vars = mapMaybe (\case
+--       Tr.IVar s -> Just s
+--       Tr.IMember iv s -> Nothing
+--       Tr.IBracketOp s ie -> Nothing ) lvals
 
 generateLabel :: FCCompiler String
 generateLabel = do
@@ -851,7 +875,7 @@ setVars vars vals = do
   put fstate'
 
 setVar :: String -> FCRegister -> FCCompiler ()
-setVar var value = modify (Fcs.declareVar var value)
+setVar var value = modify (Fcs.setVar var value)
 declVar :: String -> FCRegister -> FCCompiler ()
 declVar var value = modify (Fcs.declareVar var value)
                -------------- Loop Optimization ---------------

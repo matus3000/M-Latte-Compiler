@@ -1,8 +1,7 @@
 module Translator.ClassRepresentation (ClassRepresentation(..),
                                        setField,
                                        setFieldUnsafe,
-                                       getField,
-                                       setDefault,
+                                       lookupField,
                                        getDefault,
                                        getStructureData) where
 
@@ -12,6 +11,9 @@ import Translator.TranslatorEnvironment(StructureData)
 import qualified Translator.StructureData as SD
 
 data ClassRepresentation = ClassRepresentation (DM.Map String IValue) StructureData IValue
+
+fieldMap :: ClassRepresentation -> DM.Map String IValue
+fieldMap (ClassRepresentation x y z) = x
 
 setFieldUnsafe :: String -> IValue -> ClassRepresentation -> Maybe ClassRepresentation
 setFieldUnsafe member ivalue (ClassRepresentation map sd def) = do
@@ -24,11 +26,13 @@ setField field ivalue (ClassRepresentation map sd def) =
     memberType = SD.lookupField field sd
   in
     undefined
-getField :: String -> ClassRepresentation -> Maybe IValue
-getField = undefined
+
+lookupField :: String -> ClassRepresentation -> Maybe IValue
+lookupField field = DM.lookup field . fieldMap
+
 getDefault :: ClassRepresentation -> IValue
-getDefault = undefined
-setDefault :: ClassRepresentation -> IValue
-setDefault = undefined
+getDefault (ClassRepresentation x y z) = z
+-- setDefault :: ClassRepresentation -> IValue
+-- setDefault = undefined
 getStructureData :: ClassRepresentation -> StructureData
 getStructureData (ClassRepresentation _ sd _) = sd

@@ -132,33 +132,42 @@ lvalueToBindable = \case
 
 setLvaluesToRuntime :: Traversable a => a (LValue, Bool) -> Translator ()
 setLvaluesToRuntime lvalues = do
-  mapM_ (f >=> g) lvalues
+  x  <- mapM f lvalues
+  mapM_ g x
   where
-    g :: Either (IType, IValue, ILValue) ((Int,Int),Bindable) -> Translator()
+    g :: (Either (IType, IValue, ILValue) ((Int,Int), (Either (String, IType,IValue) (Reference, String, IType, IValue)))) -> Translator ()
     g = \case
       Left (itype, ival, ilval) -> fParameterMutableToRuntimeSingle (itype, ival, ILValue ilval)
       Right x1 -> fOverBindable x1
-    f :: (LValue, Bool) -> Translator (Either (IType, IValue, ILValue) ((Int,Int),Bindable))
+
+    f :: (LValue, Bool) -> Translator (Either (IType, IValue, ILValue)
+                                       ((Int,Int), (Either (String, IType,IValue)
+                                                    (Reference, String, IType, IValue))))
     f (lvalue, recursive) = if recursive then do
       Left <$> lvalueToInternal lvalue
-      else
-      Right <$> lvalueToBindable lvalue
-    fOverBindable (pos,x) =
-        case x of
+      else do
+      (pos, x) <- lvalueToBindable lvalue
+      case x of
           Left s -> do
             (itype, ivalue) <- getVariable pos s
-            newvalue <- case itype of
-                          LInt -> return RunTimeValue
-                          LString -> return RunTimeValue
-                          LBool -> return RunTimeValue
-                          LVoid -> undefined
-                          LFun lt lts -> undefined
-                          LArray lt -> undefined
-                          LClass str -> OwningReference <$> newClass str RunTimeValue
-                          LGenericClass str lts -> undefined
-            setVariable pos pos s (itype, newvalue)
+            return $ Right (pos, Left (s, itype, ivalue))
           Right (ref, member) -> do
-               (itype, ivalue) <- getMember pos ref member
+            (itype, ivalue) <- getMember pos ref member
+            return $ Right (pos, Right (ref, member, itype, ivalue))
+    fOverBindable :: ((Int,Int), (Either (String, IType,IValue) (Reference, String, IType, IValue))) -> Translator ()
+    fOverBindable (pos,x) = case x of
+      Left (s, itype, ivalue) -> do
+        newvalue <- case itype of
+                      LInt -> return RunTimeValue
+                      LString -> return RunTimeValue
+                      LBool -> return RunTimeValue
+                      LVoid -> undefined
+                      LFun lt lts -> undefined
+                      LArray lt -> undefined
+                      LClass str -> OwningReference <$> newClass str RunTimeValue
+                      LGenericClass str lts -> undefined
+        setVariable pos pos s (itype, newvalue)
+      Right (ref, member, itype, ivalue) -> do
                newvalue <- case itype of
                              LInt -> return RunTimeValue
                              LString -> return RunTimeValue
@@ -193,7 +202,18 @@ lvalueToInternal lvalue = let
           _ -> undefined
       LVarArr ma lv ex -> undefined
 
+doCast :: (Int, Int) -> IType -> (IType, IValue, IExpr) -> Translator (IType, IValue, IExpr)
+doCast errorpos _type triple@(itype, ivalue, iexpr) = do
+  isSub <- asks $ itype `TE.isSubClass` _type
+  if isSub then return (_type, ivalue, ICast _type iexpr)
+    else if itype == _type then return triple
+    else throwErrorInContext $ TypeConflict errorpos _type itype
+
 f :: Expr -> Translator (IType, IValue, IExpr)
+f (ECast ma _type ex) = do
+  let _itype = convertType _type
+  f ex >>= doCast (fromJust ma) _itype
+
 f (ELitInt _ x) = return (LInt , IValueInt x, ILitInt x)
 f (ELitTrue _) = return (LBool, IValueBool True, ILitBool True)
 f (ELitFalse _) = return (LBool, IValueBool False, ILitBool False)
@@ -325,10 +345,20 @@ f (ERel pos e1 op e2) = let
   helper op ie1 ie2  = g op ie1 ie2
   in
     do
-      r1@(it1, _, _) <- exprToInternal e1
-      r2@(it2, _, _) <- exprToInternal e2
+      r1@(it1, ival1, iexpr1) <- exprToInternal e1
+      r2@(it2, ival2, iexpr2) <- exprToInternal e2
       assertOpType op it1 it2
-      return $ helper op r1 r2
+      t1Sub <- asks $ it1 `TE.isSubClass` it2
+      t2Sub <- asks $ it2 `TE.isSubClass` it2
+      let ((it1', iexpr1'), (it2',iexpr2')) = if  ival1 == ival2 && ival2 == Null
+                               then ((it1, iexpr1), (it2, iexpr2)) else
+                                 if t1Sub then ((it2, ICast it2 iexpr1), (it2, iexpr2))
+                                 else if t2Sub then ((it1, iexpr1), (it1, ICast it1 iexpr2))
+                                      else ((it1, iexpr1), (it2, iexpr2))
+      ival1' <- (\x -> if x then RunTimeValue else ival1 ) <$> isIValueRunTime ival1
+      ival2' <- (\x -> if x then RunTimeValue else ival2 ) <$> isIValueRunTime ival2
+
+      return $ helper op (it1', ival1', iexpr1') (it2', ival2', iexpr2')
 f (EVar _ lvalue) = do
   (itype, ivalue, ilvalue) <- lvalueToInternal lvalue
   let iexpr =case ivalue of
@@ -372,10 +402,10 @@ f (EInternalCast ma _type expr) = do
         LClass s -> s
         _ -> undefined
   (itype, ivalue, iexpr') <- f expr
-  -- case ivalue of
-  --   OwningReference n -> castClassUnsafe n className
-  --   _ -> return ()
-  return (itype, ivalue, iexpr')
+  case ivalue of
+    OwningReference n -> castClassUnsafe n className
+    _ -> return ()
+  return (ltype, ivalue, iexpr')
 f (ENull _) = return (universalReference, Null, INull)
 f (ENewClass pos parserType) = do
   let itype = convertType parserType
@@ -457,11 +487,7 @@ itemToInternal varType item = do
   let expr = case item of
         NoInit _ _ -> defaultExpr varType
         Init _ _ ex -> ex
-  (itype, ivalue ,iexpr) <- exprToInternal expr
-  let correctType = (varType `same` itype) || case varType of
-                                                LClass s -> itype == universalReference
-                                                _ -> False
-  unless correctType (throwErrorInContext $ TypeConflict (getPosition item) varType (cast itype))
+  (itype, ivalue ,iexpr) <- exprToInternal expr >>= doCast (getPosition item) varType
   declareVariable (getPosition item) id (itype, ivalue)
   return (IItem id iexpr)
 
@@ -593,9 +619,11 @@ stmtsToInternal ((Decr mpos lvalue):rest) =
 stmtsToInternal ((Ret pos expr):rest) =
   do
     (funType, _, _, _) <- asks TE.getContext
-    (itype, ivalue, iexpr) <- exprToInternal expr
-    unless (itype `same` funType) (throwErrorInContext
+    triple@(itype, ivalue, iexpr) <- exprToInternal expr
+    isSub <- asks $ itype `TE.isSubClass` funType
+    unless (itype `same` funType || isSub) (throwErrorInContext
                                    (WrongReturnType ((-1,-1) `fromMaybe` pos) funType (cast itype)))
+    (itype, ivalue, iexpr)  <- doCast (fromJust pos) funType triple
     return ([IRet iexpr], True)
 stmtsToInternal ((VRet pos):rest) = do
   (funType, _, _, _) <- asks TE.getContext
@@ -831,10 +859,11 @@ instance TypedBiOperator RelOp IType where
           yIsClass = case y of
             LClass _ -> True
             _ -> False
-          typeCheck = ((x `same` y) && (x `same` LInt || x `same` LString || x `same` LBool)) ||
-            (sub1 || sub2) || (xIsClass && yIsClass && (x == universalReference || y == universalReference ))
+          typeCheck = (x `same` y) ||
+                      (sub1 || sub2) ||
+                      (xIsClass && yIsClass && (x == universalReference || y == universalReference ))
       unless typeCheck $ errorFun (getPosition op) x y
-    
+
     tmp (NE pos) x y = tmp (EQU pos) x y
     tmp (LTH pos) x y = do
       unless (x `same` LInt && (x `same` y)) $ errorFun (getPosition op) x y

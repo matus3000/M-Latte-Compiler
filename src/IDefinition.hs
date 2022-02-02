@@ -94,8 +94,9 @@ data LType = LInt | LString | LBool | LVoid | LFun LType [LType] | LArray LType 
 
 type UnifiedLValue = (String, LValue)
 type ModifiedLValues = [(LValue, Bool)]
-data ModifiedLvaluesBuilder = MLB (DM.Map UnifiedLValue (LValue, Bool, Int)) Int
-type DeclaredLvalues = (DS.Set LValue, DS.Set String)
+data ModifiedLvaluesBuilder = MLB (DM.Map UnifiedLValue (LValue, Bool, Int))
+                              (DM.Map (String, Bool) (LValue, Bool, Int)) Int
+type DeclaredLvalues = (DS.Set String)
 
 lvalueToUnified :: LValue -> UnifiedLValue
 lvalueToUnified  = pruneLValue
@@ -107,36 +108,66 @@ lvalueToUnified  = pruneLValue
       LVarArr ma lv ex -> undefined
 
 result :: ModifiedLvaluesBuilder -> [(LValue, Bool)]
-result mlb@(MLB map x)= DL.map (\(x,y,z)->(x,y)) $ DL.sortOn (\(x,y,z) -> z) (DM.elems map)
+result mlb@(MLB map vars x)= DL.map (\(x,y,z)->(x,y)) $ DL.sortOn (\(x,y,z) -> z) (DM.elems vars++ DM.elems map)
 
 mlbInsert :: LValue -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
 mlbInsert lvalue = mlbInsertUnified (lvalueToUnified lvalue, lvalue)
 
 mlbNextIndex :: ModifiedLvaluesBuilder -> Int
-mlbNextIndex (MLB x y) = y
+mlbNextIndex (MLB x var y) = y
+
+mlbIsMember :: Bool -> UnifiedLValue -> ModifiedLvaluesBuilder -> Bool
+mlbIsMember recursive unified@(parent, ulval) mlb@(MLB x var y) = case ulval of
+  LVar ma id -> DM.member (parent, recursive) var
+  LVarMem ma lv id -> any (`DM.member` var) [(parent,True), (parent, False)] || any (`DM.member` x) (ancestors unified)
+  LVarArr ma lv ex -> undefined
+  where
+    ancestors :: UnifiedLValue -> [UnifiedLValue]
+    ancestors = \case (s, lv) ->
+                        case lv of
+                        LVar ma id -> [(s, LVar ma id)]
+                        LVarMem ma lv' id -> (s, LVarMem ma lv' id):ancestors (s, lv')
+                        LVarArr ma lv' ex -> undefined
 
 mlbInsertUnified :: (UnifiedLValue, LValue) -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
-mlbInsertUnified (unified, lvalue) original@(MLB x y) =
-  if DM.member unified x then original else MLB (DM.insert unified (lvalue, False, y) x) (y+1)
+mlbInsertUnified (unified@(s, ulval), lvalue) original@(MLB x var y) =
+  if mlbIsMember False unified original then original else case ulval of
+    LVar ma id -> MLB x (DM.insert (s, False) (lvalue, False, y) var) (y+1)
+    LVarMem ma lv id -> MLB (DM.insert unified (lvalue, False, y) x) var (y+1)
+    LVarArr ma lv ex -> undefined
 
 mlbInsertUnifiedRec :: (UnifiedLValue, LValue) -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
-mlbInsertUnifiedRec (unified, lvalue) original@(MLB x y) =
-  if DM.member unified x then original else MLB (DM.insert unified (lvalue, True, y) x) (y+1)
+mlbInsertUnifiedRec (unified@(s, ulval), lvalue) original@(MLB x var y) =
+  if mlbIsMember True unified original then original else case ulval of
+    LVar ma id -> MLB x (DM.insert (s, True) (lvalue, True, y) var) (y+1)
+    LVarMem ma lv id -> MLB (DM.insert unified (lvalue, True, y) x) var (y+1)
+    LVarArr ma lv ex -> undefined
 
 mlbUnion :: ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
-mlbUnion mlb@(MLB map y) mlb'@(MLB map' y') = MLB (DM.union map map') (max y y')
+mlbUnion mlb@(MLB map var y) mlb'@(MLB map' var' y') = DL.foldl' f (MLB map (foldl faddVars var (DM.toList var')) (max y y')) (DM.toList map')
+  where
+    _mlbUnion :: ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder -> ModifiedLvaluesBuilder
+    _mlbUnion (MLB map var y) (MLB map' var' y') = foldl f (MLB map (foldl faddVars var (DM.toList var')) (max y y')) (DM.toList map')
+    faddVars :: DM.Map (String,Bool) (LValue, Bool, Int) -> ((String, Bool), (LValue, Bool, Int)) ->
+      DM.Map (String, Bool) (LValue, Bool, Int)
+    faddVars map1 (u, t) = if DM.member u map1 then map1 else DM.insert u t map1
+    f :: ModifiedLvaluesBuilder -> (UnifiedLValue, (LValue, Bool, Int))
+      -> ModifiedLvaluesBuilder
+    f (MLB map var y) (u@(s, ulval), t1@(lval, recursive, id))= case DM.lookup u map of
+      Nothing -> MLB (DM.insert u t1 map) var y
+      Just t2@(lval', recursive', id') -> MLB (DM.insert u (if not recursive' || recursive then t1 else t2) map) var y
 
 mlbEmpty :: Int -> ModifiedLvaluesBuilder
-mlbEmpty = MLB DM.empty
+mlbEmpty = MLB DM.empty DM.empty
 
 dlContains :: UnifiedLValue -> DeclaredLvalues -> Bool
-dlContains ul dl = DS.member (fst ul) (snd dl) || DS.member (snd ul) (fst dl)
+dlContains ul dl = DS.member (fst ul) dl
 dlInsert ::  UnifiedLValue -> DeclaredLvalues -> DeclaredLvalues
-dlInsert ul = Data.Bifunctor.bimap (DS.insert (snd ul)) (DS.insert (fst ul))
+dlInsert ul = DS.insert (fst ul)
 dlUnion :: DeclaredLvalues -> DeclaredLvalues -> DeclaredLvalues
-dlUnion ul1@(s1, s2) ul2@(s1', s2') = (DS.union s1 s1', DS.union s2 s2')
+dlUnion ul1@s1 ul2@s1' = DS.union s1 s1'
 dlEmpty :: DeclaredLvalues
-dlEmpty = (DS.empty , DS.empty)
+dlEmpty = DS.empty
 type Program = EnrichedProgram' BNFC'Position
 data EnrichedProgram' a = Program a [EnrichedTopDef' a] [EnrichedClassDef' a]
 
@@ -201,6 +232,7 @@ addThisEverywhere decl (Lt.Block ma sts)= Lt.Block ma sts'
       Lt.SExp ma' ex -> (decl, Lt.SExp ma' (g decl ex))
     g :: DeclaredVars -> Lt.Expr -> Lt.Expr
     g decl expr = case expr of
+      Lt.EMethod ma lv id x0 -> Lt.EMethod ma (h' lv) id (map (g decl) x0)
       Lt.EVar ma' lv -> Lt.EVar ma' (h' lv)
       Lt.ELitInt ma' n -> expr
       Lt.ELitTrue ma' -> expr
@@ -217,6 +249,7 @@ addThisEverywhere decl (Lt.Block ma sts)= Lt.Block ma sts'
       Lt.ERel ma' ex ro ex' -> Lt.ERel ma' (g' ex) ro (g' ex')
       Lt.EAnd ma' ex ex' -> Lt.EAnd ma' (g' ex) (g' ex')
       Lt.EOr ma' ex ex' -> Lt.EOr ma' (g' ex) (g' ex')
+      Lt.ECast ma' t ex -> Lt.ECast ma' t (g' ex)
       where
         g' = g decl
         h' = h decl
@@ -345,7 +378,7 @@ stmtToEnrichedStmt stmt md rd = case stmt of
     where
       _md = exprGetModifiedVars False expr md rd
       (stmt1', md', rd') = stmtToEnrichedStmt stmt1 (mlbEmpty $ mlbNextIndex _md) dlEmpty
-      (stmt2', md'', rd'') = stmtToEnrichedStmt stmt2 (mlbEmpty $ mlbNextIndex md') dlEmpty
+      (stmt2', md'', rd'') = stmtToEnrichedStmt stmt2 (mlbEmpty $ mlbNextIndex _md) dlEmpty
       md'''= mlbUnion md' md''
       newmd = mlbUnion _md md'''
   Lt.While a expr stmt -> (While a expr stmt' (result md''), newmd, rd)
@@ -379,6 +412,7 @@ stmtToEnrichedStmt stmt md rd = case stmt of
       EAnd ma ex ex' -> mlb
       EOr ma ex ex' -> mlb
       EInternalCast ma ty ex -> mlb
+      ECast ma _ _ -> mlb
 convertType :: Type -> LType
 convertType (Int _) = LInt
 convertType (Str _) = LString

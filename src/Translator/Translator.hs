@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Translator.Translator(Translator,
                             setMember,
                             getMember,
@@ -12,6 +13,8 @@ module Translator.Translator(Translator,
                             evalTranslator,
                             castClassUnsafe,
                             setReferenceRecursivelyToRunTime,
+                            isReferenceRunTime,
+                            isIValueRunTime,
                             MemoryState(..),
                             VariableState) where
 
@@ -76,6 +79,21 @@ isTranslatingMethod :: Translator  Bool
 isTranslatingMethod = do
   (_, _, _, ms) <- asks TE.getContext
   return $ isJust ms
+
+isReferenceRunTime :: Reference -> Translator Bool
+isReferenceRunTime ref = do
+  x  <- gets $ fromJust . DM.lookup ref . msStructures . memoryState
+  return $ RunTimeValue == TCR.getDefault x
+
+isIValueRunTime :: IValue -> Translator Bool
+isIValueRunTime = \case 
+  IValueInt n -> return False
+  IValueBool b -> return False
+  IValueString s -> return False
+  Null -> return False
+  Undefined -> return False
+  RunTimeValue -> return True
+  OwningReference n -> isReferenceRunTime n
 
 newTranslatorState :: TranslatorState
 newTranslatorState = TSRoot (MemoryState DM.empty DM.empty DM.empty (Allocator 0 0)) VE.newVarEnv

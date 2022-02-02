@@ -81,6 +81,8 @@ separator  Type "," ;
 
 -- Expressions ---------------------------------------------
 
+ECast.     Expr7 ::= "(" Type ")" Expr6;
+
 EVar.      Expr6 ::= LValue ;
 
 ELitInt.   Expr6 ::= Integer ;

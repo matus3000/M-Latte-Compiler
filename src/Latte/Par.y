@@ -178,6 +178,11 @@ ListType
   | Type { (fst $1, (:[]) (snd $1)) }
   | Type ',' ListType { (fst $1, (:) (snd $1) (snd $3)) }
 
+Expr7 :: { (Latte.Abs.BNFC'Position, Latte.Abs.Expr) }
+Expr7
+  : '(' Type ')' Expr6 { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), Latte.Abs.ECast (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1)) (snd $2) (snd $4)) }
+  | '(' Expr ')' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), (snd $2)) }
+
 Expr6 :: { (Latte.Abs.BNFC'Position, Latte.Abs.Expr) }
 Expr6
   : LValue { (fst $1, Latte.Abs.EVar (fst $1) (snd $1)) }
@@ -222,10 +227,6 @@ Expr :: { (Latte.Abs.BNFC'Position, Latte.Abs.Expr) }
 Expr
   : Expr1 '||' Expr { (fst $1, Latte.Abs.EOr (fst $1) (snd $1) (snd $3)) }
   | Expr1 { (fst $1, (snd $1)) }
-
-Expr7 :: { (Latte.Abs.BNFC'Position, Latte.Abs.Expr) }
-Expr7
-  : '(' Expr ')' { (uncurry Latte.Abs.BNFC'Position (tokenLineCol $1), (snd $2)) }
 
 ListExpr :: { (Latte.Abs.BNFC'Position, [Latte.Abs.Expr]) }
 ListExpr

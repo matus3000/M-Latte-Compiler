@@ -87,7 +87,8 @@ data Type' a
 
 type Expr = Expr' BNFC'Position
 data Expr' a
-    = EVar a (LValue' a)
+    = ECast a (Type' a) (Expr' a)
+    | EVar a (LValue' a)
     | ELitInt a Integer
     | ELitTrue a
     | ELitFalse a
@@ -202,6 +203,7 @@ instance HasPosition Type where
 
 instance HasPosition Expr where
   hasPosition = \case
+    ECast p _ _ -> p
     EVar p _ -> p
     ELitInt p _ -> p
     ELitTrue p -> p

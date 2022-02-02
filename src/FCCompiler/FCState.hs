@@ -11,8 +11,7 @@ module FCCompiler.FCState (FCState(fcsConstants),
                            closeFunBlock,
                            openBlock,
                            closeBlock,
-                           openConditionalBlock,
-                           closeConditionalBlock,
+                           applyConditionalStateChange,
                            getRegisterType,
                            nextLabel,
                            generateLabels,
@@ -31,7 +30,7 @@ import qualified Data.List as DL
 import qualified Control.Arrow as BiFunctor
 import Control.Monad (join)
 
-import FCCompilerTypes (FCRValue (FCFunArg, GetField, GetElementPtr, FCLoad), FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr, FCPointer))
+import FCCompilerTypes (FCRValue (FCFunArg, GetField, GetElementPtr, FCLoad), FCRegister (Reg, ConstString, VoidReg, LitInt, LitBool, Et, FCNull), FCSimpleBlock, fCRValueType, FCType (Void, Int, Bool, ConstStringPtr, FCPointer), universalPointer)
 import VariableEnvironment(VarEnv(..), newVarEnv)
 import qualified VariableEnvironment as VE
 import Data.Maybe (isJust, fromMaybe)
@@ -77,9 +76,9 @@ ssaRegAllocNew = 0
 ssaNext :: SSARegisterAllocator -> (SSARegisterAllocator, Int)
 ssaNext x = (x+1, x)
 
-regmapOpenConditionalBlock :: FCRegMap -> FCRegMap
-regmapOpenConditionalBlock (FCRegMap m1 m2 m3) = FCRegMap m1 (VE.openClosure m2) m3
-regmapCloseConditionalBlock (FCRegMap m1 m2 m3) = FCRegMap m1 (VE.closeClosure m2) m3
+-- regmapOpenConditionalBlock :: FCRegMap -> FCRegMap
+-- regmapOpenConditionalBlock (FCRegMap m1 m2 m3) = FCRegMap m1 (VE.openClosure m2) m3
+-- regmapCloseConditionalBlock (FCRegMap m1 m2 m3) = FCRegMap m1 (VE.closeClosure m2) m3
 regmapLookupRegister :: FCRegister -> FCRegMap -> Maybe FCRValue
 regmapLookupRegister x regmap = case x of
   Reg{} -> DM.lookup x (_regMap regmap)
@@ -103,7 +102,14 @@ fcsModifyVenv :: (FCVarEnv -> FCVarEnv) -> FCState -> FCState
 fcsModifyVenv f x = fcsPutVenv (f (fcsVenv x)) x
 fcsModifyRegMap :: (FCRegMap -> FCRegMap) -> FCState -> FCState
 fcsModifyRegMap f x = fcsPutRegMap (f (fcsRegMap x)) x
-  -- Exported functions
+
+applyConditionalStateChange :: FCState -> FCState -> FCState
+applyConditionalStateChange before  =
+  fcsModifyRegMap (\after -> FCRegMap (_regMap after)
+                    (_rvalueMap $ fcsRegMap before)
+                    (_regToPtrRegMap $ fcsRegMap before)) .
+  fcsPutVenv (fcsVenv before)
+
 
 new :: FCState
 new = FCState newVarEnv ssaRegAllocNew fcRegMapNew ctcNew laNew
@@ -152,7 +158,7 @@ addFCRValue fcrval onconflict fcstate = let
           TwoWay -> (DM.insert r fcrval regmap, VE.declareVar fcrval r rvaluemap)
           RValueToReg -> (regmap, VE.declareVar fcrval r rvaluemap)
         regreg' = case fcrval of
-          GetField ft s ft' fr -> 
+          GetField ft s ft' fr ->
             DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
           GetElementPtr ft n ft' fr -> DM.insert fr (r : fromMaybe [] (DM.lookup fr regreg)) regreg
           _ -> regreg
@@ -170,7 +176,7 @@ getRegisterType reg fstate = case reg of
   LitInt n -> Just Int
   LitBool b -> Just Bool
   Et s -> Just Void
-  FCNull x -> Just (error "I need to think that one out")
+  FCNull x -> Just universalPointer
   ConstString x -> Just $ ConstStringPtr x
   where
     regenv = fcsRegMap fstate
@@ -250,10 +256,12 @@ openBlock x = fcsPutVenv (VE.openClosure (fcsVenv x)) x
 closeBlock :: FCState -> FCState
 closeBlock x = fcsPutVenv (VE.closeClosure (fcsVenv x)) x
 
-openConditionalBlock :: FCState -> FCState
-openConditionalBlock = openBlock . fcsModifyRegMap regmapOpenConditionalBlock
-closeConditionalBlock :: FCState -> FCState
-closeConditionalBlock = closeBlock . fcsModifyRegMap regmapCloseConditionalBlock
+-- openConditionalBlock :: FCState -> FCState
+-- openConditionalBlock = openBlock . fcsModifyRegMap regmapOpenConditionalBlock
+-- closeConditionalBlock :: FCState -> FCState
+-- closeConditionalBlock = closeBlock . fcsModifyRegMap regmapCloseConditionalBlock
+
+
 
 nextLabel :: FCState -> (FCState, String)
 nextLabel fstate = let

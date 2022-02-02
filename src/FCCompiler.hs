@@ -245,6 +245,16 @@ translateILValue bb ilvalue bool = do
       return (bb3, (memberPointerType, r2))
     _ -> undefined
 
+translateILValueReadOnly :: BlockBuilder -> Tr.ILValue -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
+translateILValueReadOnly bb ilvalue bool = do
+  case ilvalue of 
+    Tr.IVar s -> translateILValue bb ilvalue bool
+    Tr.IMember {} -> do
+      (bb1, (fctype, register)) <- translateILValue bb ilvalue True
+      (bb2, register')  <- emplaceFCRValue (FCLoad (derefencePointerType fctype) fctype register) bb1
+      return (bb2, (derefencePointerType fctype, register'))
+    Tr.IBracketOp s ie -> undefined
+    
 getILValue :: Tr.ILValue  -> FCCompiler (Maybe (FCType, FCRegister))
 getILValue ilvalue = do
   state <- get
@@ -283,14 +293,7 @@ translateExpr bname bb ie save =
          constEt <- getConstStringReg s
          (bb',r) <- emplaceFCRValue (BitCast DynamicStringPtr  (ConstStringPtr (1 + length s)) constEt ) bb
          return (bb', (DynamicStringPtr, r))
-      Tr.ILValue ilvalue -> do
-        res@(bb', (ftype, reg))<- translateILValue bb ilvalue save
-        case ilvalue of
-          Tr.IVar s -> return res
-          Tr.IMember iv s -> do
-            (bb'', reg') <- emplaceFCRValue (FCLoad (derefencePointerType ftype) ftype reg) bb'
-            return (bb'', (derefencePointerType ftype, reg'))
-          Tr.IBracketOp s ie' -> undefined
+      Tr.ILValue ilvalue -> translateILValueReadOnly bb ilvalue save
       addInstr@(Tr.IAdd iao ie ie') -> translateExprAddMull addInstr bb save
       mulInstr@(Tr.IMul imo ie ie') -> translateExprAddMull mulInstr bb save
       Tr.INeg ie ->  do
@@ -321,8 +324,8 @@ translateExpr bname bb ie save =
       Tr.IOr _ -> do
         translateOrExpr bname bb ie True
       Tr.IMethod ilvalue method args -> do
-        (bb', (fctype, fcreg)) <- translateILValue bb ilvalue True
-
+        (bb', (fctype, fcreg)) <- translateILValueReadOnly bb ilvalue True
+        
         let className =case derefencePointerType fctype of
               Class s -> s
               _ -> error $ "Trouble with fctype : " ++ show fctype
@@ -440,19 +443,26 @@ translateInstr name bb stmt = case stmt of
                                                       (bb, (_, reg)) <- translateExpr name bbNew ie True
                                                       return (bbBuildAnonymous bb, reg)))
 
-        (sVals, sb) <- withPrenamedOpenBlock successLabel Success 
+        (sVals, sb) <- withOpenBlock Success 
           (\name -> do
               sbb <- translateBlock name ib bbNew
               sVal <- mapM getVar vars
-              let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
-              return (sVal, bbBuildNamed sbb' name))
+              let sbb' = bbaddInstr (VoidReg, jump successLabel) sbb
+                  epilogue = bbBuildNamed (bbaddInstr (VoidReg, jump postLabel) bbNew)
+                    successLabel
+                  sbb'' = bbaddBlock epilogue sbb'
+              return (sVal, bbBuildNamed sbb'' name))
 
-        (fVals, fb) <- withPrenamedOpenBlock failureLabel Failure
+        (fVals, fb) <- withOpenBlock Failure
           (\name -> do
               sbb <- translateBlock name ib' bbNew
               fVals <- mapM getVar vars
-              let sbb' = bbaddInstr (VoidReg, jump postLabel) sbb
-              return (fVals, bbBuildNamed sbb' name))
+              let sbb' = bbaddInstr (VoidReg, jump failureLabel) sbb
+                  epilogue = bbBuildNamed (bbaddInstr (VoidReg, jump postLabel) bbNew)
+                    failureLabel
+                  sbb'' = bbaddBlock epilogue sbb'
+
+              return (fVals, bbBuildNamed sbb'' name))
 
         mapM_ flushDynamicRegister md
         pb <- withPrenamedOpenBlock postLabel Post $ \name -> (do

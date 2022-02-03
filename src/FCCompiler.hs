@@ -579,12 +579,12 @@ translateFun (Tr.IFun s lt lts ib) = do
       fbodyBB <- translateBlock s ib bbNew
       dynamicFuns <- ask
       let
-        optimize :: FCBlock -> FCBlock
-        -- optimize =
-        --   snd . removeDeadCode dynamicFuns DS.empty.
-        --   gcseOptimize dynamicFuns  .
-        --   snd . removeDeadCode dynamicFuns DS.empty
-        optimize=id
+        -- optimize :: FCBlock -> FCBlock
+        optimize =
+          snd . removeDeadCode dynamicFuns DS.empty.
+          gcseOptimize dynamicFuns  .
+          snd . removeDeadCode dynamicFuns DS.empty
+        -- optimize=id
         fbody = bbBuildAnonymous fbodyBB
         fbody' = optimize fbody
       return $ FCFun' {name = s, retType = convert lt, args = res, FCT.body = fbody'}

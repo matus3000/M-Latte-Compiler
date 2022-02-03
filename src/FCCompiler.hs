@@ -546,12 +546,17 @@ translateInstr name bb stmt = case stmt of
         case iv of
           Tr.IVar s -> return ()
           _ -> do
-            mlval <- getILValue iv
+            state <- get 
+            (bb, lval) <- translateILValue bbNew iv True
+            let mlval = case bb of
+                  BB [] s [] -> Just lval
+                  BB x0 s fbs -> Nothing
+            put state
             case mlval of
               Just (ftype, freg) -> case ftype of
                 FCPointer ft -> modify (Fcs.clearRValue (FCLoad ft ftype freg))
                 _ -> error $ show (ftype, freg)
-              Nothing -> return ()
+              Nothing-> return ()
     translateIItem' = flip $ translateIItem name
     translateExpr' = translateExpr name
     translateInstr' = translateInstr name bb

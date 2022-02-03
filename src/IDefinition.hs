@@ -74,8 +74,8 @@ import Latte.Abs
       LValue,
       Expr'(..), LValue' (LVarMem, LVar, LVarArr))
 import qualified Latte.Abs as Lt
-import Data.Maybe (fromMaybe, isJust, fromJust, catMaybes)
-import Data.Maybe (mapMaybe)
+import Data.Maybe
+    ( fromMaybe, isJust, fromJust, catMaybes, mapMaybe )
 import Data.Ord
 import qualified Control.Arrow as Data.BiFunctor
 import qualified Data.Bifunctor
@@ -178,6 +178,9 @@ type ClassDef = EnrichedClassDef' BNFC'Position
 data EnrichedClassDef' a = ClassDef a Ident [ClassMemberDef' a] [ClassMethodDef' a] |
   ClassDefExtends a Ident Ident [ClassMemberDef' a] [ClassMethodDef' a]
 
+instance Show (EnrichedClassDef' a) where
+  show (ClassDef _ (Ident x) _ _) = "class " ++ x
+  show (ClassDefExtends _ (Ident x) (Ident y) _ _) = "class " ++ x ++ " extends" ++ y
 type ClassMemberDef = ClassMemberDef' BNFC'Position
 data ClassMemberDef' a = FieldDecl a (Type' a) [Lt.FieldDeclItem' a]
 
@@ -293,11 +296,7 @@ preprocessProgram :: Lt.Program -> Program
 preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
   where
     topdefs' = mapMaybe f topdefs
-    classdefs = DL.sortOn classToString $ mapMaybe f' topdefs
-    classToString :: ClassDef -> String
-    classToString = \case
-      ClassDef ma (Ident id) cmds _-> "00_" ++ id
-      ClassDefExtends ma (Ident id) (Ident id') cmds _ -> "01_" ++ id' ++ "_" ++ "id"
+    classdefs = sortClassDefs $ mapMaybe f' topdefs
     f' :: Lt.TopDef -> Maybe ClassDef
     f' (Lt.ClassDef a id members) = Just $ uncurry (ClassDef a id)
       (preprocessMembers members)
@@ -313,6 +312,32 @@ preprocessProgram (Lt.Program a topdefs) = Program a topdefs' classdefs
       where
         (BStmt a block', _, _) = stmtToEnrichedStmt (Lt.BStmt a block) (mlbEmpty 0) dlEmpty
 
+sortClassDefs :: [ClassDef] -> [ClassDef]
+sortClassDefs list = reverse $ _sort ["_base"] [] x 
+  where
+    x :: DM.Map String [ClassDef]
+    x = foldl (\mapping classdef ->
+                 case classdef of
+                  ClassDef _ (Ident id) _ _ -> DM.insert "_base"
+                    (classdef:oldValues "_base" mapping) mapping
+                  ClassDefExtends _ (Ident id) (Ident id') _ _ -> DM.insert id'
+                    (classdef:oldValues id' mapping) mapping
+              )
+        DM.empty list
+        where
+          oldValues :: String -> DM.Map String [ClassDef] -> [ClassDef]
+          oldValues s map = [] `fromMaybe` DM.lookup s map
+    _sort :: [String] -> [ClassDef] -> DM.Map String [ClassDef] -> [ClassDef]
+    _sort [] rest mapping = foldl (flip (++)) rest (DM.elems mapping)
+    _sort list rest mapping = let
+      f :: ([String], [ClassDef], DM.Map String [ClassDef]) -> String ->
+        ([String], [ClassDef], DM.Map String [ClassDef])
+      f whole@(classNames, classDefs, mapping) s = case DM.lookup s mapping of
+        Nothing -> whole
+        Just list -> (map getIdStr list ++ classNames, list ++ classDefs, DM.delete s mapping)
+      (list', rest', mapping') = DL.foldl' f ([], rest, mapping) list
+      in
+      _sort list' rest' mapping'
 stmtToEnrichedStmt :: Lt.Stmt -> ModifiedLvaluesBuilder ->
                       DeclaredLvalues -> (Stmt, ModifiedLvaluesBuilder, DeclaredLvalues)
 stmtToEnrichedStmt stmt md rd = case stmt of

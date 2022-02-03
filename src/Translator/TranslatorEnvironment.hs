@@ -205,7 +205,8 @@ classParsingPhase2 set defs = runReaderT (classParsingPhase2' defs) set
             return $ ihAddClassInheritence className parentName ih
 
 classParsingPhase3 :: InheritenceHierarchy -> [ClassDef] -> CompilerExcept StructureDataMap
-classParsingPhase3 ih defs = runReaderT (foldM f DM.empty defs) ih
+classParsingPhase3 ih defs = 
+  runReaderT (foldM f DM.empty defs) ih
   where
     f :: StructureDataMap -> ClassDef ->
          (ReaderT InheritenceHierarchy CompilerExcept) StructureDataMap
@@ -214,7 +215,8 @@ classParsingPhase3 ih defs = runReaderT (foldM f DM.empty defs) ih
                       ClassDef {} -> return ([], DM.empty, DM.empty)
                       ClassDefExtends _ _ (Ident parent) _  _ ->
                         let
-                          parentSD = fromJust (DM.lookup parent se)
+                          parentSD = fromMaybe (Prelude.error $ "Nothing for" ++ show parent ++ "\n" ++ show se)
+                            (DM.lookup parent se)
                           in
                           return (SD.fields parentSD, SD.methods parentSD, SD.methodsParents parentSD)
       let (className, parent, cmds, _methods) =case classdef of
@@ -279,6 +281,7 @@ classParsingPhase3 ih defs = runReaderT (foldM f DM.empty defs) ih
 
 getStructureEnvironment :: Program -> CompilerExcept StructureEnvironment
 getStructureEnvironment (Program _ _ structDefs) = do
+  -- Prelude.error $ show  structDefs
   x <- classParsingPhase1 structDefs
   y <- classParsingPhase2 x structDefs
   z <- classParsingPhase3 y structDefs

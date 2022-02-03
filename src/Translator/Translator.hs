@@ -86,7 +86,7 @@ isReferenceRunTime ref = do
   return $ RunTimeValue == TCR.getDefault x
 
 isIValueRunTime :: IValue -> Translator Bool
-isIValueRunTime = \case 
+isIValueRunTime = \case
   IValueInt n -> return False
   IValueBool b -> return False
   IValueString s -> return False
@@ -179,15 +179,15 @@ setMember pos ref memberName (itype, ivalue) = do
   memory <- gets memoryState
   let (ClassRepresentation map sd _default) = fromJust $ DM.lookup ref (msStructures memory)
       memberType = SD.lookupField memberName sd
-      correct :: IType -> Bool
-      correct = \x -> (x `same` itype ||
-                       case x of
-                          LClass s -> itype == universalReference
-                          _ -> False)
-  case correct <$> memberType of
+  case memberType of
     Nothing -> throwErrorInContext $ UndefinedField pos memberName
-    Just False -> throwErrorInContext $ TypeConflict pos (fromJust memberType) itype
-    Just True -> modifyMemoryState (msModifyReferenceUnsafe ref memberName ivalue)
+    Just memberType -> do
+      isSubClass <- asks $ TE.isSubClass itype memberType
+      (_, newval) <- if memberType `same` itype then return (memberType, ivalue)
+                     else if isSubClass then castIValue (itype, ivalue) memberType
+                     else throwErrorInContext $
+                          TypeConflict pos (cast memberType) (cast itype)
+      modifyMemoryState (msModifyReferenceUnsafe ref memberName newval)
 
 setReferenceRecursivelyToRunTime :: Reference -> Translator ()
 setReferenceRecursivelyToRunTime reference = do
@@ -209,6 +209,21 @@ setReferenceRecursivelyToRunTime reference = do
   modifyMemoryState (const memory')
   mapM_ setReferenceRecursivelyToRunTime references
 
+castIValue :: (IType,IValue) -> IType -> Translator (IType, IValue)
+castIValue (it1, iv) it2 = do
+  memory <- gets memoryState
+  case (it1, it2) of
+    (LClass s1, LClass s2) -> do
+      -- case iv of 
+        -- OwningReference n -> do
+        --   _sd2 <- asks $ fromJust . TE.lookupClass  s2
+        --   let old@(ClassRepresentation _map _sd _default )  = fromJust $ DM.lookup n $ msStructures memory
+        --       new = ClassRepresentation _map _sd2 _default
+        --   (allocator', ref) <- gets (allocateStruct . msAllocator . memoryState)
+      return (it2, iv)
+        -- _ -> Prelude.error $  "Unexcpected value of "
+    (_, _) -> Prelude.error "Cast is not allowed"
+
 setVariable :: (Int, Int) -> (Int, Int) -> String -> (IType, IValue) -> Translator ()
 setVariable varpos eqpos varname (itype', ivalue') = do
   varstate <- gets varState
@@ -216,12 +231,12 @@ setVariable varpos eqpos varname (itype', ivalue') = do
   case x of
     Nothing -> throwErrorInContext (UndefinedVar varpos varname)
     Just (itype, ivalue) -> do
-      let correctType = case itype of
-            LClass s -> itype `same` itype' || itype' == universalReference
-            _ -> itype `same` itype'
-      unless correctType (throwErrorInContext $
-                           TypeConflict eqpos (cast itype) (cast itype'))
-      modifyVarState (VE.setVar varname (itype', ivalue'))
+      isSubClass <- asks $ TE.isSubClass itype' itype
+      newval <- if itype `same` itype' then return (itype', ivalue')
+           else if isSubClass then castIValue (itype', ivalue') itype
+                else throwErrorInContext $
+                           TypeConflict eqpos (cast itype) (cast itype')
+      modifyVarState (VE.setVar varname newval)
 
 getVariable :: (Int, Int) -> String -> Translator (IType, IValue)
 getVariable pos varName = do

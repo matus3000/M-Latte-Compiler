@@ -6,6 +6,7 @@
 
 declare i64 @strlen(i8*)
 declare i8* @malloc(i64)
+declare i8* @calloc(i64, i64)
 declare i8* @strcpy(i8*, i8*)
 declare i8* @strcat(i8*, i8*)
 declare i32 @printf(i8*, ...)
@@ -25,7 +26,7 @@ define i8* @_new(i32 %0) {
   br label %L3
   L3:
   %r1.5 = phi i64 [%r1, %L1], [8, %L2]
-  %r2 = call i8* @malloc(i64 %r1.5)
+  %r2 = call i8* @calloc(i64 %r1.5,i64 1)
   ret i8* %r2
 }
 

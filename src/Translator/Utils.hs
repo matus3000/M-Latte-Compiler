@@ -36,7 +36,7 @@ preprocessMethodsInClasses senv classdef = let
       ELitFalse ma -> expr
       ENull ma -> expr
       EApp ma (Ident id) exs -> if DM.member id senv
-        then EMethod ma (LVar ma (Ident "this")) (Ident id) (map e exs)
+        then EMethod ma (LVar ma (Ident "self")) (Ident id) (map e exs)
         else expr
       EMethod ma lval id exs -> EMethod ma lval id (map e exs)
       EString ma s -> expr

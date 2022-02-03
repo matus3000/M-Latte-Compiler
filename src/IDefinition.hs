@@ -257,7 +257,7 @@ addThisEverywhere decl (Lt.Block ma sts)= Lt.Block ma sts'
     h decl lval = case lval of
       Lt.LVar ma' (Ident id) -> if DS.member id decl
         then lval
-        else Lt.LVarMem ma' (Lt.LVar ma' (Ident "this")) (Ident id)
+        else Lt.LVarMem ma' (Lt.LVar ma' (Ident "self")) (Ident id)
       Lt.LVarMem ma' lv id -> Lt.LVarMem ma' (h decl lv) id
       Lt.LVarArr ma' lv ex -> undefined
     getDeclared :: DeclaredVars -> Item -> (DeclaredVars, Item)
@@ -285,7 +285,7 @@ preprocessMembers members =  (f members, g members)
           Lt.FieldDecl ma ty fdis -> res
           Lt.MemthodDecl ma ty name args block -> MethodDecl ma ty name args block' : res
             where
-              initiallyDeclared = DS.fromList $ "this":map getIdStr args
+              initiallyDeclared = DS.fromList $ "self":map getIdStr args
               (BStmt a block', _, _) = stmtToEnrichedStmt
                 (Lt.BStmt a (addThisEverywhere initiallyDeclared block)) (mlbEmpty 0) dlEmpty
 

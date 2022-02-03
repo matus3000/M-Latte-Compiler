@@ -552,10 +552,12 @@ stmtsToInternal ((Decl pos dtype items):rest) = do
   (istmts, ret) <- stmtsToInternal rest
   return (IDecl items:istmts, ret)
 stmtsToInternal (stm@(Ass pos lvalue expr):rest) = do
-  (itype', ivalue', irexp) <- exprToInternal expr
+  triple <- exprToInternal expr
   istmt <- case lvalue of
     LVar ma (Ident varname) -> do
       let varpos = undefined `fromMaybe` ma
+      (ltype, _) <- getVariable (fromJust ma) varname
+      (itype', ivalue', irexp) <- doCast (fromJust ma) ltype triple
       setVariable (fromJust ma) (fromJust pos) varname (itype', ivalue')
       return $ IAss (IVar varname) irexp
     LVarMem ma lv (Ident memberName) -> do
@@ -565,6 +567,8 @@ stmtsToInternal (stm@(Ass pos lvalue expr):rest) = do
         Undefined -> throwErrorInContext $ UndefinedDerefence (fromJust ma)
         OwningReference n -> return n
         _ -> undefined
+      (ltype, _) <- getMember (fromJust pos) reference memberName
+      (itype', ivalue', irexp) <- doCast (fromJust pos) ltype triple
       setMember (fromJust pos) reference memberName (itype', ivalue')
       return $ IAss (IMember ilvalue memberName) irexp
     LVarArr ma lv ex -> undefined
@@ -735,7 +739,7 @@ topDefToInternal ms fDef fEnv sEnv = let
     castThis = \case
       Nothing -> return ()
       Just s -> do
-        (itype, ivalue) <- getVariable (-1,-1)  "this"
+        (itype, ivalue) <- getVariable (-1,-1) "self"
         let (OwningReference ref) = ivalue
         castClassUnsafe ref s
 
@@ -765,7 +769,7 @@ classDefToInternal cdef fEnv sEnv =
           className == methodAnnouncer then ifun
           else
             let (IBlock stmts) = b
-                cast = IDecl [IItem "this" $ ICast (LClass className) (ILValue (IVar "this"))]
+                cast = IDecl [IItem "self" $ ICast (LClass className) (ILValue (IVar "self"))]
             in
               IFun s l x (IBlock (cast:stmts))
         methodToTopDef :: ClassMethodDef -> TopDef
@@ -776,7 +780,7 @@ classDefToInternal cdef fEnv sEnv =
             addThisArg = (thisArg methodAnnouncer :)
               where
                 thisArg :: String -> Arg
-                thisArg name =  Lt.Arg (Just (-1,-1)) (Class (Just (-1,-1)) (Ident name)) (Ident "this")
+                thisArg name =  Lt.Arg (Just (-1,-1)) (Class (Just (-1,-1)) (Ident name)) (Ident "self")
             args' = addThisArg args
 assertMain :: FunctionEnvironment -> CompilerExcept ()
 assertMain fEnv =

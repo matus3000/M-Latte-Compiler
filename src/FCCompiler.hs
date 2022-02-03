@@ -247,14 +247,14 @@ translateILValue bb ilvalue bool = do
 
 translateILValueReadOnly :: BlockBuilder -> Tr.ILValue -> Bool -> FCCompiler (BlockBuilder, (FCType, FCRegister))
 translateILValueReadOnly bb ilvalue bool = do
-  case ilvalue of 
+  case ilvalue of
     Tr.IVar s -> translateILValue bb ilvalue bool
     Tr.IMember {} -> do
       (bb1, (fctype, register)) <- translateILValue bb ilvalue True
       (bb2, register')  <- emplaceFCRValue (FCLoad (derefencePointerType fctype) fctype register) bb1
       return (bb2, (derefencePointerType fctype, register'))
     Tr.IBracketOp s ie -> undefined
-    
+
 getILValue :: Tr.ILValue  -> FCCompiler (Maybe (FCType, FCRegister))
 getILValue ilvalue = do
   state <- get
@@ -325,7 +325,7 @@ translateExpr bname bb ie save =
         translateOrExpr bname bb ie True
       Tr.IMethod ilvalue method args -> do
         (bb', (fctype, fcreg)) <- translateILValueReadOnly bb ilvalue True
-        
+
         let className =case derefencePointerType fctype of
               Class s -> s
               _ -> error $ "Trouble with fctype : " ++ show fctype
@@ -350,13 +350,17 @@ translateExpr bname bb ie save =
           (bb6,[])
           args
 
-        emplaceFCRValue' (FunCallDynamic retType loadedFunction ((t5, thisReg):reverse args))
+        let args' = (t5, thisReg):reverse args
+
+        -- mapM_ ((modify . Fcs.registerToDynamicRec) . snd) args'
+        emplaceFCRValue' (FunCallDynamic retType loadedFunction args')
           bb7
       Tr.IApp fun ies -> do
         (bb', rargs) <- foldlM
           (\(bb, acc) ie -> BiFunctor.second (:acc) <$> translateExpr' bb ie True)
           (bb,[])
           ies
+        -- mapM_ ((modify . Fcs.registerToDynamicRec) . snd) rargs
         rtype <- asks $ fromJust . Fce.functionType fun
         let args = reverse rargs
         (bb, reg)<- emplaceFCRValue (FunCall rtype fun args) bb'
@@ -443,7 +447,7 @@ translateInstr name bb stmt = case stmt of
                                                       (bb, (_, reg)) <- translateExpr name bbNew ie True
                                                       return (bbBuildAnonymous bb, reg)))
 
-        (sVals, sb) <- withOpenBlock Success 
+        (sVals, sb) <- withOpenBlock Success
           (\name -> do
               sbb <- translateBlock name ib bbNew
               sVal <- mapM getVar vars
@@ -484,7 +488,7 @@ translateInstr name bb stmt = case stmt of
 
     mapM_ flushDynamicRegister md
     setVars vars (map fst reg_ft)
-    
+
     (sVals, sb) <- withOpenBlock Success $
       \name -> do
         sbb <- translateBlock name ib bbNew
@@ -533,8 +537,8 @@ translateInstr name bb stmt = case stmt of
       \case
       (iv, True)  -> do
         mlval<- getILValue iv
-        case mlval of 
-          Nothing -> 
+        case mlval of
+          Nothing ->
             return ()
           Just (_, reg) -> -- error $ show mlval
             modify $ Fcs.registerToDynamicRec reg
@@ -658,6 +662,7 @@ emplaceFCRValue rvalue bb = do
       if ioFun || muts || returnsPointer
         then g rvalue bb
         else f rvalue bb
+    FunCallDynamic {} -> g rvalue bb
     _ -> f rvalue bb
   where
     isReturnTypeDynamic :: FCType -> Bool
@@ -672,7 +677,6 @@ emplaceFCRValue rvalue bb = do
         Left r' -> return (bb, r')
         Right r' -> put fstate' >> return (bbaddInstr (r', rvalue) bb, r')
       case rvalue of
-        FunCall ft s x0 -> error "Tutaj powinniśmy dokonać unloadu mappingu na struktury"
         FCStore ft fr ft' fr' -> mockLoad fr ft ft' fr
         _ -> return ()
       return res
@@ -680,6 +684,10 @@ emplaceFCRValue rvalue bb = do
     g :: FCRValue -> BlockBuilder -> FCCompiler (BlockBuilder, FCRegister)
     g rvalue bb = do
       (fstate', r) <- gets $ Fcs.addFCRValue rvalue Fcs.RegisterToRValue
+      case rvalue of 
+        FunCall ft s x0 -> mapM_ ((modify . Fcs.registerToDynamicRec) . snd) x0
+        FunCallDynamic ft fr x0 -> mapM_ ((modify . Fcs.registerToDynamicRec) . snd) x0
+        _ -> return ()
       case r of
         Left r' -> error "This should not happen"
         Right r' -> put fstate' >> return (bbaddInstr (r', rvalue) bb, r')

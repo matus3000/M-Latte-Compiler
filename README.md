@@ -8,7 +8,6 @@ This projects implements following functionalities form Task.md
 3. Usage of Phi registers
 4. LCSE and GCSE optimizations
 5. Objects with virtual methods
-6.  
 
 ## Running.
 Solution uses Makefile to build itself. One needs only basic haskell libraries.

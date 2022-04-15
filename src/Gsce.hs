@@ -195,12 +195,7 @@ gcse env (args, (vib, vbb), block) =
   case block of
     FCNamedSBlock s x0 x1 -> let
       (args', vib') = foldl' getValue' (args, vib) x0
-      -- (args'', list) = DS.foldl' eliminate (args', []) (DS.intersection vib' vbb)
-      -- newblock = FCNamedSBlock (if null list then s else "") x0 x1
       in
-      -- if null list
-      -- then (args'', (vib', vbb), newblock)
-      -- else (args'', (vib', vbb), FCComplexBlock "" (FCNamedSBlock "" list ():[newblock]) ())
       (args', (vib', vbb), block)
     FCComplexBlock s fbs x0 ->
       let

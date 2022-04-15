@@ -754,34 +754,6 @@ withOpenFunBlock s rt slts f = do
   return result
 
 
--- openBlock :: BlockType -> FCCompiler ()
--- openBlock bt = do
---   case bt of
---     FunBody -> error "OpenBlock FunBody"
---     Normal -> modify Fcs.openBlock
---     BoolExp -> return () -- modify Fcs.openBlock 
---     Cond -> return () -- modify Fcs.openBlock 
---     While -> return ()
---     -- Check -> modify Fcs.openConditionalBlock
---     -- Success -> modify Fcs.openConditionalBlock
---     -- Failure -> modify Fcs.openConditionalBlock
---     Post -> return ()
---     BTPlacceHolder -> error "OpenBlock PlaceHolder"
-
--- closeBlock :: BlockType -> FCCompiler ()
--- closeBlock bt = do
---   case bt of
---     FunBody -> error "OpenBlock FunBody"
---     Normal -> modify Fcs.closeBlock
---     BoolExp -> return ()
---     Cond -> return ()
---     While -> return ()
---     -- Check ->  modify Fcs.closeConditionalBlock
---     -- Success -> modify Fcs.closeConditionalBlock
---     -- Failure ->  modify Fcs.closeConditionalBlock
---     Post -> return ()
---     BTPlacceHolder -> error "OpenBlock PlaceHolder"
-
 withPrenamedOpenBlock :: String -> BlockType -> (String -> FCCompiler a )-> FCCompiler a
 withPrenamedOpenBlock bname bt f = do
   let with =case bt of
@@ -837,28 +809,6 @@ withOpenBlock bt f = do
             put fstate'
             return label
 
--- protectVariables :: [String] -> FCCompiler ()
--- protectVariables vars = do
---   modify (Fcs.protectVars vars)
-
--- protectVariablesWhile :: [String] -> FCCompiler ()
--- protectVariablesWhile = error "protectVariablesWhile: undefined"
-
--- endprotection :: FCCompiler ()
--- endprotection = modify Fcs.endProtection
-
--- withProtectedVars :: [Tr.ILValue] -> FCCompiler a -> FCCompiler a
--- withProtectedVars lvals f = do
---   protectVariables vars
---   res <- f
---   endprotection
---   return res
---   where
---     vars = mapMaybe (\case
---       Tr.IVar s -> Just s
---       Tr.IMember iv s -> Nothing
---       Tr.IBracketOp s ie -> Nothing ) lvals
-
 generateLabel :: FCCompiler String
 generateLabel = do
   (fstate, res) <- gets Fcs.nextLabel
@@ -901,6 +851,7 @@ setVar :: String -> FCRegister -> FCCompiler ()
 setVar var value = modify (Fcs.setVar var value)
 declVar :: String -> FCRegister -> FCCompiler ()
 declVar var value = modify (Fcs.declareVar var value)
+
                -------------- Loop Optimization ---------------
 
 -- isInstrDynamic :: DS.Set String -> DS.Set FCRegister -> FCInstr -> Bool

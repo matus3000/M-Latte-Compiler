@@ -1016,7 +1016,8 @@ data FunctionMetadata = FM {usedExternal :: DS.Set String,
                             mutableArgs :: DM.Map String [Bool]}
 
 --------------------------------------------------------------------------------------------------
-
+-- WIP - Optimization of Loop Body
+--------------------------------------------------------------------------------------------------
 -- trOptimizeLoop :: DynamicFunction -> IBlock -> IBlock
 
 -- type DynamicFunction = DS.Set String
